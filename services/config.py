@@ -27,6 +27,16 @@ DEFAULT_BACKUP_INCLUDE = {
     "images": False,
 }
 
+DEFAULT_IMAGE_STORAGE = {
+    "enabled": False,
+    "mode": "local",
+    "webdav_url": "",
+    "webdav_username": "",
+    "webdav_password": "",
+    "webdav_root_path": "chatgpt2api/images",
+    "public_base_url": "",
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -83,6 +93,35 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
         "last_error": str(source.get("last_error") or "").strip() or None,
         "last_object_key": str(source.get("last_object_key") or "").strip() or None,
     }
+
+
+def _normalize_image_storage_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    mode = str(source.get("mode") or "local").strip().lower()
+    if mode not in {"local", "webdav", "both"}:
+        mode = "local"
+    enabled = _normalize_bool(source.get("enabled"), False)
+    if not enabled:
+        mode = "local"
+    root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "webdav_url": str(source.get("webdav_url") or "").strip().rstrip("/"),
+        "webdav_username": str(source.get("webdav_username") or "").strip(),
+        "webdav_password": str(source.get("webdav_password") or "").strip(),
+        "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
+    }
+
+
+def _validate_image_storage_settings(settings: dict[str, object]) -> None:
+    if not _normalize_bool(settings.get("enabled"), False):
+        return
+    if not str(settings.get("webdav_url") or "").strip():
+        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
+    if not str(settings.get("webdav_password") or "").strip():
+        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
 
 
 @dataclass(frozen=True)
@@ -285,6 +324,7 @@ class ConfigStore:
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
         data["backup"] = self.get_backup_settings()
+        data["image_storage"] = self.get_image_storage_settings()
         data.pop("auth-key", None)
         return data
 
@@ -296,6 +336,9 @@ class ConfigStore:
         next_data.update(dict(data or {}))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
+        if "image_storage" in next_data:
+            next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
+            _validate_image_storage_settings(next_data["image_storage"])
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -303,6 +346,9 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_image_storage_settings(self) -> dict[str, object]:
+        return _normalize_image_storage_settings(self.data.get("image_storage"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""
