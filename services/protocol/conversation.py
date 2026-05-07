@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import re
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import tiktoken
 
 from services.account_service import account_service
 from services.config import config
+from services.image_storage_service import image_storage_service
 from services.openai_backend_api import OpenAIBackendAPI
 from utils.helper import IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
@@ -67,14 +66,7 @@ def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
 
 
 def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
-    config.cleanup_old_images()
-    file_hash = hashlib.md5(image_data).hexdigest()
-    filename = f"{int(time.time())}_{file_hash}.png"
-    relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
-    file_path = config.images_dir / relative_dir / filename
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_bytes(image_data)
-    return f"{(base_url or config.base_url)}/images/{relative_dir.as_posix()}/{filename}"
+    return image_storage_service.save(image_data, base_url).url
 
 
 def message_text(content: Any) -> str:

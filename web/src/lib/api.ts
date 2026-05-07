@@ -70,7 +70,20 @@ export type SettingsConfig = {
   log_levels?: string[];
   backup?: BackupSettings;
   backup_state?: BackupState;
+  image_storage?: ImageStorageSettings;
   [key: string]: unknown;
+};
+
+export type ImageStorageMode = "local" | "webdav" | "both";
+
+export type ImageStorageSettings = {
+  enabled: boolean;
+  mode: ImageStorageMode;
+  webdav_url: string;
+  webdav_username: string;
+  webdav_password: string;
+  webdav_root_path: string;
+  public_base_url: string;
 };
 
 export type BackupInclude = {
@@ -147,6 +160,9 @@ export type ManagedImage = {
   url: string;
   thumbnail_url?: string;
   created_at: string;
+  storage?: "local" | "webdav" | "both" | string;
+  local?: boolean;
+  webdav?: boolean;
   width?: number;
   height?: number;
   tags?: string[];
@@ -394,6 +410,20 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
 
 export async function testBackupConnection() {
   return httpRequest<{ result: { ok: boolean; status: number } }>("/api/backup/test", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function testImageStorageConnection() {
+  return httpRequest<{ result: { ok: boolean; status: number; error?: string | null } }>("/api/image-storage/test", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function syncImageStorage() {
+  return httpRequest<{ result: { uploaded: number; skipped: number; failed: number } }>("/api/image-storage/sync", {
     method: "POST",
     body: {},
   });
