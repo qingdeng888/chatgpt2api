@@ -1,8 +1,8 @@
-ARG BUILDPLATFORM
-ARG TARGETPLATFORM
-ARG TARGETARCH
+ARG BUILDPLATFORM=linux/amd64
+ARG TARGETPLATFORM=linux/amd64
+ARG TARGETARCH=amd64
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
+FROM --platform=${BUILDPLATFORM} node:22-alpine AS web-build
 
 WORKDIR /app/web
 
@@ -14,7 +14,7 @@ COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
 
-FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
+FROM --platform=${TARGETPLATFORM} python:3.13-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
