@@ -450,18 +450,20 @@ class InbucketMailProvider(BaseMailProvider):
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
         self.api_base = str(entry["api_base"]).rstrip("/")
+        self.api_key = str(entry.get("api_key") or "").strip()
         raw_domains = entry.get("domain") or []
         if isinstance(raw_domains, list):
             self.domain = [str(item).strip() for item in raw_domains if str(item).strip()]
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
-        self.random_subdomain = bool(entry.get("random_subdomain", True))
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.headers.update({
             "User-Agent": conf["user_agent"],
             "Accept": "application/json",
         })
+        if self.api_key:
+            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
 
     def _request(self, method: str, path: str, expected: tuple[int, ...] = (200,)):
         resp = self.session.request(
@@ -490,15 +492,14 @@ class InbucketMailProvider(BaseMailProvider):
 
     def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
         local_part = username or _random_mailbox_name()
-        base_domain = self._resolve_domain()
-        domain = f"{_random_subdomain_label()}.{base_domain}" if self.random_subdomain else base_domain
+        domain = self._resolve_domain()
         address = f"{local_part}@{domain}"
         mailbox_name = self._mailbox_name(address)
         return {
             "provider": self.name,
             "provider_ref": self.provider_ref,
             "address": address,
-            "base_domain": base_domain,
+            "base_domain": domain,
             "mailbox_name": mailbox_name,
         }
 
