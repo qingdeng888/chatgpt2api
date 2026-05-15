@@ -204,7 +204,7 @@ curl http://localhost:8000/v1/images/generations \
 <summary><code>POST /v1/images/edits</code></summary>
 <br>
 
-OpenAI 兼容图片编辑接口，用于上传图片并生成编辑结果。
+OpenAI 兼容图片编辑接口，可上传图片文件，也可按官方 JSON 格式传入图片链接并生成编辑结果。
 
 ```bash
 curl http://localhost:8000/v1/images/edits \
@@ -213,6 +213,21 @@ curl http://localhost:8000/v1/images/edits \
   -F "prompt=把这张图改成赛博朋克夜景风格" \
   -F "n=1" \
   -F "image=@./input.png"
+```
+
+也可以直接传图片 URL：
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -H "Authorization: Bearer <auth-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "把这张图改成赛博朋克夜景风格",
+    "images": [
+      {"image_url": "https://example.com/input.png"}
+    ]
+  }'
 ```
 
 <details>
@@ -225,6 +240,8 @@ curl http://localhost:8000/v1/images/edits \
 | `prompt` | 图片编辑提示词                             |
 | `n`      | 生成数量，当前后端限制为 `1-4`                  |
 | `image`  | 需要编辑的图片文件，使用 multipart/form-data 上传 |
+| `images` | JSON 图片引用数组，支持 `{"image_url": "https://..."}` |
+| `image_url` | 表单模式下也可直接传图片链接，支持重复字段传多张图          |
 
 <br>
 </details>
