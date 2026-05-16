@@ -8,10 +8,16 @@ export type AuthRole = "admin" | "user";
 export type Account = {
   access_token: string;
   type: AccountType;
+  export_type?: string | null;
   status: AccountStatus;
   quota: number;
   image_quota_unknown?: boolean;
   email?: string | null;
+  expired?: string | null;
+  id_token?: string | null;
+  account_id?: string | null;
+  last_refresh?: string | null;
+  refresh_token?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
     feature_name?: string;
@@ -48,6 +54,22 @@ type AccountUpdateResponse = {
   item: Account;
   items: Account[];
 };
+
+export type AccountImportPayload = {
+  access_token: string;
+  accessToken?: string;
+  type?: string;
+  export_type?: string;
+  email?: string;
+  expired?: string;
+  id_token?: string;
+  account_id?: string;
+  last_refresh?: string;
+  refresh_token?: string;
+  [key: string]: unknown;
+};
+
+export type AccountExportFormat = "json" | "zip";
 
 export type SettingsConfig = {
   proxy: string;
@@ -254,10 +276,13 @@ export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
 }
 
-export async function createAccounts(tokens: string[]) {
+export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
-    body: { tokens },
+    body: {
+      tokens,
+      ...(accounts.length > 0 ? { accounts } : {}),
+    },
   });
 }
 
@@ -273,6 +298,32 @@ export async function refreshAccounts(accessTokens: string[]) {
     method: "POST",
     body: { access_tokens: accessTokens },
   });
+}
+
+function getFilenameFromDisposition(value: unknown, fallback: string) {
+  const disposition = typeof value === "string" ? value : "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+  }
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || fallback;
+}
+
+export async function exportAccounts(format: AccountExportFormat, accessTokens: string[] = []) {
+  const response = await request.request<Blob>({
+    url: "/api/accounts/export",
+    method: "POST",
+    data: {
+      format,
+      access_tokens: accessTokens,
+    },
+    responseType: "blob",
+  });
+  return {
+    blob: response.data,
+    filename: getFilenameFromDisposition(response.headers["content-disposition"], `codex-accounts.${format}`),
+  };
 }
 
 export async function updateAccount(

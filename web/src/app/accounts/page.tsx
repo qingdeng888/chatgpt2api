@@ -42,10 +42,12 @@ import {
 } from "@/components/ui/select";
 import {
   deleteAccounts,
+  exportAccounts,
   fetchAccounts,
   refreshAccounts,
   updateAccount,
   type Account,
+  type AccountExportFormat,
   type AccountStatus,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -149,13 +151,11 @@ function maskToken(token?: string) {
   return `${token.slice(0, 16)}...${token.slice(-8)}`;
 }
 
-function downloadTokens(accounts: Account[]) {
-  const content = `${accounts.map((account) => account.access_token).join("\n")}\n`;
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `accounts-${Date.now()}.txt`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -179,6 +179,7 @@ function AccountsPageContent() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -340,6 +341,25 @@ function AccountsPageContent() {
     }
   };
 
+  const handleExportAccounts = async (format: AccountExportFormat, tokens: string[]) => {
+    if (tokens.length === 0) {
+      toast.error("没有可导出的账户");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const data = await exportAccounts(format, tokens);
+      downloadBlob(data.blob, data.filename);
+      toast.success(format === "zip" ? "ZIP 压缩包已导出" : "JSON 文件已导出");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导出账户失败";
+      toast.error(message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
       setSelectedIds((prev) => Array.from(new Set([...prev, ...currentRows.map((item) => item.access_token)])));
@@ -388,11 +408,20 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => downloadTokens(accounts)}
-            disabled={accounts.length === 0}
+            onClick={() => void handleExportAccounts("json", accounts.map((item) => item.access_token))}
+            disabled={accounts.length === 0 || isExporting}
           >
-            <Download className="size-4" />
-            导出全部 Token
+            {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+            导出全部 JSON
+          </Button>
+          <Button
+            variant="outline"
+            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            onClick={() => void handleExportAccounts("zip", accounts.map((item) => item.access_token))}
+            disabled={accounts.length === 0 || isExporting}
+          >
+            {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+            导出全部 ZIP
           </Button>
         </div>
       </section>
@@ -579,6 +608,24 @@ function AccountsPageContent() {
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   删除所选
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
+                  onClick={() => void handleExportAccounts("json", selectedTokens)}
+                  disabled={selectedTokens.length === 0 || isExporting}
+                >
+                  {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                  导出所选 JSON
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
+                  onClick={() => void handleExportAccounts("zip", selectedTokens)}
+                  disabled={selectedTokens.length === 0 || isExporting}
+                >
+                  {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                  导出所选 ZIP
                 </Button>
                 {selectedIds.length > 0 ? (
                   <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
