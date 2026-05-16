@@ -195,12 +195,21 @@ export function RegisterCard() {
                       {type === "ddg_mail" ? (
                         <>
                         <div className="space-y-2">
-                          <label className="text-sm text-stone-700">DDG Token</label>
-                          <Input value={String(provider.ddg_token || "")} onChange={(event) => updateProvider(index, { ddg_token: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="DuckDuckGo Bearer Token" />
+                          <label className="text-sm text-stone-700">DDG Token <span className="text-red-400">*</span></label>
+                          <Input value={String(provider.ddg_token || "")} onChange={(event) => updateProvider(index, { ddg_token: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="DuckDuckGo Email Protection 的 Bearer Token" />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-sm text-stone-700">CF Inbox JWT <span className="text-stone-400">(可选，固定收件箱)</span></label>
-                          <Input value={String(provider.cf_inbox_jwt || "")} onChange={(event) => updateProvider(index, { cf_inbox_jwt: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="填写后使用固定收件箱而非动态创建" />
+                          <label className="text-sm text-stone-700">CF Inbox JWT <span className="text-red-400">*</span></label>
+                          <Input value={String(provider.cf_inbox_jwt || "")} onChange={(event) => updateProvider(index, { cf_inbox_jwt: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="CF 临时邮箱后端的固定收件箱 JWT（DDG 转发目标）" />
+                        </div>
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                          <p className="font-medium mb-1">使用说明</p>
+                          <ol className="list-decimal list-inside space-y-0.5">
+                            <li>先在 <a href="https://duckduckgo.com/email/" target="_blank" className="underline">DuckDuckGo Email Protection</a> 登录并设置转发目标为 CF 收件箱地址</li>
+                            <li>DDG Token 从浏览器 DevTools → Network → quack.duckduckgo.com 请求中获取 <code className="bg-amber-100 px-1 rounded">Authorization: Bearer</code></li>
+                            <li>CF Inbox JWT 从 CF 临时邮箱后端创建固定收件箱后获取</li>
+                            <li>所有 @duck.com 别名收到的邮件会转发到同一个 CF 收件箱，系统按 To: 头自动匹配</li>
+                          </ol>
                         </div>
                         </>
                       ) : null}
