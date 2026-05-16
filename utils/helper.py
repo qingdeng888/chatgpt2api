@@ -27,6 +27,41 @@ def is_image_chat_request(body: dict[str, object]) -> bool:
     return isinstance(modalities, list) and "image" in {str(item or "").strip().lower() for item in modalities}
 
 
+_UPSTREAM_BODY_LOG_LIMIT = 500
+
+
+class UpstreamHTTPError(RuntimeError):
+    """Raised when an upstream HTTP call returns a non-2xx status.
+
+    Carries structured fields (status_code, body, retry_after) so callers can
+    branch on status code instead of string-matching on str(exc). The full
+    body is preserved on the instance; the formatted message truncates it
+    to keep log lines reasonable.
+    """
+
+    def __init__(
+        self,
+        context: str,
+        status_code: int,
+        body: Any,
+        retry_after: int | None = None,
+    ) -> None:
+        self.context = context
+        self.status_code = status_code
+        self.body = body
+        self.retry_after = retry_after
+        if isinstance(body, (dict, list)):
+            try:
+                body_str = json.dumps(body, ensure_ascii=False)
+            except (TypeError, ValueError):
+                body_str = repr(body)
+        else:
+            body_str = str(body)
+        if len(body_str) > _UPSTREAM_BODY_LOG_LIMIT:
+            body_str = body_str[:_UPSTREAM_BODY_LOG_LIMIT] + "…[truncated]"
+        super().__init__(f"{context} failed: status={status_code}, body={body_str}")
+
+
 def ensure_ok(response: requests.Response, context: str) -> None:
     if 200 <= response.status_code < 300:
         return
@@ -35,7 +70,13 @@ def ensure_ok(response: requests.Response, context: str) -> None:
         body = response.json()
     except Exception:
         pass
-    raise RuntimeError(f"{context} failed: status={response.status_code}, body={body}")
+    retry_after_header = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+    retry_after: int | None = None
+    if retry_after_header is not None:
+        ra_str = str(retry_after_header).strip()
+        if ra_str.isdigit():
+            retry_after = int(ra_str)
+    raise UpstreamHTTPError(context, response.status_code, body, retry_after=retry_after)
 
 
 def sse_json_stream(items) -> Iterator[str]:
