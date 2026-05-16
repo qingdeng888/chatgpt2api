@@ -349,19 +349,10 @@ class DDGMailProvider(BaseMailProvider):
 
         _record_ddg_alias(ddg_address)
 
-        if self.cf_inbox_jwt:
-            return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt}
+        if not self.cf_inbox_jwt:
+            raise RuntimeError("DDGMail 需要 cf_inbox_jwt（DDG 转发目标的固定收件箱 JWT），请在邮箱配置中填写 CF Inbox JWT")
 
-        cf_payload: dict[str, Any] = {"enablePrefix": True, "name": username or _random_mailbox_name()}
-        if self.cf_domain:
-            cf_payload["domain"] = _next_domain(self.cf_domain)
-        cf_create_path = "/admin/new_address" if self.cf_admin_password else self.cf_create_path
-        cf_data = self._cf_request("POST", cf_create_path, payload=cf_payload, expected=(200, 201))
-        cf_address = str(cf_data.get("address") or "").strip()
-        cf_jwt = str(cf_data.get("jwt") or "").strip()
-        if not cf_address or not cf_jwt:
-            raise RuntimeError("DDGMail CF 缺少 address 或 jwt")
-        return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": cf_jwt, "cf_address": cf_address}
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt}
 
     def _parse_raw_recipient(self, raw_text: str) -> str:
         if not raw_text:
