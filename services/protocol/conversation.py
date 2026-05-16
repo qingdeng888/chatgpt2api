@@ -13,7 +13,7 @@ import tiktoken
 
 from services.account_service import account_service
 from services.config import config
-from services.openai_backend_api import OpenAIBackendAPI
+from services.openai_backend_api import ImagePollTimeoutError, OpenAIBackendAPI
 from utils.helper import IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
 
@@ -624,6 +624,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     return
                 account_service.mark_image_result(token, True)
                 break
+            except ImagePollTimeoutError:
+                raise
             except ImageGenerationError:
                 account_service.mark_image_result(token, False)
                 raise
