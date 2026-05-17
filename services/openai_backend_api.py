@@ -26,7 +26,6 @@ class InvalidAccessTokenError(RuntimeError):
 
 class ImagePollTimeoutError(RuntimeError):
     pass
-    pass
 
 
 @dataclass
