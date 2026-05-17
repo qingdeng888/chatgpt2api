@@ -70,6 +70,7 @@ def _config(mail_config: dict) -> dict:
         "wait_timeout": float(mail_config.get("wait_timeout") or 30),
         "wait_interval": float(mail_config.get("wait_interval") or 2),
         "user_agent": str(mail_config.get("user_agent") or "Mozilla/5.0"),
+        "proxy": str(mail_config.get("proxy") or "").strip(),
     }
 
 
@@ -297,7 +298,10 @@ class DDGMailProvider(BaseMailProvider):
         self.cf_domain = entry.get("cf_domain") or []
         self.cf_create_path = str(entry.get("cf_create_path") or "/api/new_address").strip()
         self.cf_messages_path = str(entry.get("cf_messages_path") or "/api/mails").strip()
+        self.proxy = str(conf.get("proxy") or "").strip()
         self.session = curl_requests.Session(impersonate="chrome")
+        if self.proxy:
+            self.session.proxies = {"http": self.proxy, "https": self.proxy}
 
     def _cf_build_headers(self, content_type: bool = False) -> dict:
         headers = {"Content-Type": "application/json"} if content_type else {}
