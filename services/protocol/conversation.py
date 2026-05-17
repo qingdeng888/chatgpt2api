@@ -354,7 +354,8 @@ def add_unique(values: list[str], candidates: list[str]) -> None:
 def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
     conversation_match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
     conversation_id = conversation_match.group(1) if conversation_match else ""
-    file_ids = re.findall(r"(file[-_][A-Za-z0-9]+)", payload)
+    # Negative lookahead excludes "file-service" (URI prefix, not a real id).
+    file_ids = re.findall(r"(file[-_](?!service\b)[A-Za-z0-9]+)", payload)
     sediment_ids = re.findall(r"sediment://([A-Za-z0-9_-]+)", payload)
     return conversation_id, file_ids, sediment_ids
 
@@ -373,7 +374,19 @@ def update_conversation_state(state: ConversationState, payload: str, event: dic
     conversation_id, file_ids, sediment_ids = extract_conversation_ids(payload)
     if conversation_id and not state.conversation_id:
         state.conversation_id = conversation_id
-    if isinstance(event, dict) and is_image_tool_event(event):
+    # Accept file_id / sediment_id when any of:
+    #   1) event is a complete image_gen tool message
+    #   2) prior server_ste_metadata already flipped tool_invoked True (in an image_gen turn)
+    #   3) patch event whose payload references asset_pointer / file-service://
+    # User messages (type=conversation.message) never satisfy these, so attacker-controlled
+    # substrings in user input cannot inject file ids into state.
+    is_patch_event = isinstance(event, dict) and event.get("o") == "patch"
+    image_context = (
+        (isinstance(event, dict) and is_image_tool_event(event))
+        or state.tool_invoked is True
+        or (is_patch_event and ("asset_pointer" in payload or "file-service://" in payload))
+    )
+    if image_context:
         add_unique(state.file_ids, file_ids)
         add_unique(state.sediment_ids, sediment_ids)
     if not isinstance(event, dict):
