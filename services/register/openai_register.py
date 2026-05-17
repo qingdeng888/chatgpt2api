@@ -541,15 +541,10 @@ class PlatformRegistrar:
 
     def _login_and_exchange_tokens(self, email: str, password: str, mailbox: dict, index: int) -> dict:
         step(index, "开始独立登录换 token")
-
-        # 关键：清除注册阶段残留的认证 cookie，避免 409 invalid_state
-        for cookie in list(self.session.cookies):
-            if 'auth.openai.com' in cookie.domain:
-                self.session.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
-        # 重新设置设备 ID（必须）
-        self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
-        self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
-
+        login_session = create_session(config["proxy"])
+        login_device_id = str(uuid.uuid4())
+        login_session.cookies.set("oai-did", login_device_id, domain=".auth.openai.com")
+        login_session.cookies.set("oai-did", login_device_id, domain="auth.openai.com")
         code_verifier, code_challenge = _generate_pkce()
         params = {
             "issuer": auth_base,
@@ -581,7 +576,9 @@ class PlatformRegistrar:
             h["referer"] = referer
             h["oai-device-id"] = login_device_id
             h.update(_make_trace_headers())
-            return h        resp, error = request_with_local_retry(
+            return h
+
+        resp, error = request_with_local_retry(
             login_session, "get",
             f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
             headers=_login_nav_headers(f"{platform_base}/"),
@@ -593,12 +590,10 @@ class PlatformRegistrar:
 
         # 提交邮箱（原样，不带 state）
         def _do_authorize_continue():
-            h = self._json_headers(f"{auth_base}/log-in?usernameKind=email")
-            h["openai-sentinel-token"] = build_sentinel_token(
-                self.session, self.device_id, "authorize_continue"
-            )
+            h = _login_json_headers(f"{auth_base}/log-in?usernameKind=email")
+            h["openai-sentinel-token"] = build_sentinel_token(login_session, login_device_id, "authorize_continue")
             return request_with_local_retry(
-                self.session, "post",
+                login_session, "post",
                 f"{auth_base}/api/accounts/authorize/continue",
                 json={"username": {"kind": "email", "value": email}},
                 headers=h,
@@ -611,15 +606,15 @@ class PlatformRegistrar:
         if resp is not None and resp.status_code == 409:
             step(index, "邮箱提交 invalid_state，重新 authorize 后重试")
             # 再次清除 cookie 并重新 authorize
-            for cookie in list(self.session.cookies):
+            for cookie in list(login_session.cookies):
                 if 'auth.openai.com' in cookie.domain:
-                    self.session.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
-            self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
-            self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
+                    login_session.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
+            login_session.cookies.set("oai-did", login_device_id, domain=".auth.openai.com")
+            login_session.cookies.set("oai-did", login_device_id, domain="auth.openai.com")
             resp, error = request_with_local_retry(
-                self.session, "get",
+                login_session, "get",
                 f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
-                headers=self._navigate_headers(f"{platform_base}/"),
+                headers=_login_nav_headers(f"{platform_base}/"),
                 allow_redirects=True, verify=False
             )
             if resp is None:
