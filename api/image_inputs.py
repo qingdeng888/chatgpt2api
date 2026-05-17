@@ -17,7 +17,7 @@ from starlette.datastructures import UploadFile
 from services.proxy_service import proxy_settings
 
 ImageInput = tuple[bytes, str, str]
-ImageSource = str | UploadFile
+ImageSource = str | UploadFile | ImageInput
 
 MAX_IMAGE_REFERENCE_BYTES = 50 * 1024 * 1024
 IMAGE_REFERENCE_FIELDS = {"image", "image[]", "images", "images[]", "image_url", "image_url[]"}
@@ -90,6 +90,18 @@ def _json_reference_value(value: object) -> object:
         return value
 
 
+def _decode_base64_image(value: object, filename: str, mime_type: str) -> ImageInput:
+    try:
+        data = base64.b64decode(str(value).strip(), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid base64 image data"}) from exc
+    if not data:
+        raise HTTPException(status_code=400, detail={"error": "image file is empty"})
+    if len(data) > MAX_IMAGE_REFERENCE_BYTES:
+        raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
+    return data, filename, mime_type
+
+
 def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
     """提取图片引用对象：支持 image_url 或 url，明确拒绝 file_id。"""
     has_url = "image_url" in value or "url" in value
@@ -98,6 +110,11 @@ def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
             status_code=400,
             detail={"error": "file_id image references are not supported; use image_url instead"},
         )
+    inline = value.get("b64_json") or value.get("base64")
+    if inline:
+        filename = _clean(value.get("filename") or value.get("file_name"), "image.png")
+        mime_type = _clean(value.get("mime_type") or value.get("mimeType"), "image/png")
+        return [_decode_base64_image(inline, filename, mime_type)]
     if not has_url:
         raise HTTPException(status_code=400, detail={"error": "image reference must include image_url"})
     image_url = value.get("image_url", value.get("url"))
@@ -113,7 +130,11 @@ def _sources_from_value(value: object) -> list[ImageSource]:
         return [value]
     if isinstance(value, str):
         text = value.strip()
-        return [text] if text else []
+        if not text:
+            return []
+        if text.lower().startswith(("data:", "http://", "https://")):
+            return [text]
+        return [_decode_base64_image(text, "image.png", "image/png")]
     if isinstance(value, list):
         sources: list[ImageSource] = []
         for item in value:
@@ -254,6 +275,9 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
     """读取图片来源：上传文件直接读取，URL 下载后统一返回图片元组。"""
     images: list[ImageInput] = []
     for source in sources:
+        if isinstance(source, tuple):
+            images.append(source)
+            continue
         if _is_upload(source):
             try:
                 image_data = await source.read()
