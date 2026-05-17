@@ -24,6 +24,11 @@ class InvalidAccessTokenError(RuntimeError):
     pass
 
 
+class ImagePollTimeoutError(RuntimeError):
+    pass
+    pass
+
+
 @dataclass
 class ChatRequirements:
     """保存一次对话请求所需的 sentinel token。"""
@@ -668,7 +673,11 @@ class OpenAIBackendAPI:
                           "elapsed_secs": round(time.time() - start, 1)})
             time.sleep(4)
         logger.info({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
-        return [], []
+        raise ImagePollTimeoutError(
+            f"ChatGPT 生图超时（已等待 {timeout_secs} 秒）。"
+            f"当前超时阈值可在 config.json 中调大 image_poll_timeout_secs，"
+            f"也可能是账号被限流或生图队列拥堵导致。"
+        )
 
     def _get_file_download_url(self, file_id: str) -> str:
         """获取文件下载地址。"""
