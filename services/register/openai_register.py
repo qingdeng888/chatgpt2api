@@ -518,7 +518,12 @@ class PlatformRegistrar:
         step(index, f"开始校验验证码 {code}")
         resp, error = validate_otp(self.session, self.device_id, code)
         if resp is None or resp.status_code != 200:
-            raise RuntimeError(error or f"validate_otp_http_{getattr(resp, 'status_code', 'unknown')}")
+            body = ""
+            try:
+                body = (resp.text or "")[:500] if resp is not None else ""
+            except Exception:
+                pass
+            raise RuntimeError(error or f"validate_otp_http_{getattr(resp, 'status_code', 'unknown')}_body={body}")
         step(index, "验证码校验完成")
 
     def _create_account(self, name: str, birthdate: str, index: int) -> None:
@@ -533,10 +538,10 @@ class PlatformRegistrar:
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
         step(index, "创建账号资料完成")
-            
+
     def _login_and_exchange_tokens(self, email: str, password: str, mailbox: dict, index: int) -> dict:
         step(index, "开始独立登录换 token")
-        
+
         # 关键：清除注册阶段残留的认证 cookie，避免 409 invalid_state
         for cookie in list(self.session.cookies):
             if 'auth.openai.com' in cookie.domain:
@@ -544,14 +549,14 @@ class PlatformRegistrar:
         # 重新设置设备 ID（必须）
         self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
         self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
-        
+
         code_verifier, code_challenge = _generate_pkce()
         params = {
             "issuer": auth_base,
             "client_id": platform_oauth_client_id,
             "audience": platform_oauth_audience,
             "redirect_uri": platform_oauth_redirect_uri,
-            "device_id": self.device_id,
+            "device_id": login_device_id,
             "screen_hint": "login_or_signup",
             "max_age": "0",
             "login_hint": email,
@@ -564,16 +569,28 @@ class PlatformRegistrar:
             "code_challenge_method": "S256",
             "auth0Client": platform_auth0_client,
         }
-        resp, error = request_with_local_retry(
-            self.session, "get",
+
+        def _login_nav_headers(referer: str = "") -> dict[str, str]:
+            h = dict(navigate_headers)
+            if referer:
+                h["referer"] = referer
+            return h
+
+        def _login_json_headers(referer: str) -> dict[str, str]:
+            h = dict(common_headers)
+            h["referer"] = referer
+            h["oai-device-id"] = login_device_id
+            h.update(_make_trace_headers())
+            return h        resp, error = request_with_local_retry(
+            login_session, "get",
             f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
-            headers=self._navigate_headers(f"{platform_base}/"),
+            headers=_login_nav_headers(f"{platform_base}/"),
             allow_redirects=True, verify=False
         )
         if resp is None:
             raise RuntimeError(error or "platform_login_authorize_failed")
         step(index, "登录 authorize 完成")
-    
+
         # 提交邮箱（原样，不带 state）
         def _do_authorize_continue():
             h = self._json_headers(f"{auth_base}/log-in?usernameKind=email")
@@ -588,7 +605,7 @@ class PlatformRegistrar:
                 allow_redirects=False,
                 verify=False
             )
-    
+
         step(index, "开始提交邮箱")
         resp, error = _do_authorize_continue()
         if resp is not None and resp.status_code == 409:
@@ -608,7 +625,7 @@ class PlatformRegistrar:
             if resp is None:
                 raise RuntimeError(error or "platform_login_authorize_retry_failed")
             resp, error = _do_authorize_continue()
-    
+
         if resp is None or resp.status_code != 200:
             data = _response_json(resp) if resp is not None else {}
             detail = json.dumps(data, ensure_ascii=False) if data else ""
@@ -617,15 +634,15 @@ class PlatformRegistrar:
                 + (f": {detail}" if detail else "")
             )
         step(index, "邮箱提交完成")
-    
+
         # 密码验证
         step(index, "开始密码校验")
-        headers = self._json_headers(f"{auth_base}/log-in/password")
+        headers = _login_json_headers(f"{auth_base}/log-in/password")
         headers["openai-sentinel-token"] = build_sentinel_token(
-            self.session, self.device_id, "password_verify"
+            login_session, login_device_id, "password_verify"
         )
         resp, error = request_with_local_retry(
-            self.session, "post",
+            login_session, "post",
             f"{auth_base}/api/accounts/password/verify",
             json={"password": password},
             headers=headers,
@@ -633,32 +650,40 @@ class PlatformRegistrar:
             verify=False
         )
         if resp is None or resp.status_code != 200:
-            raise RuntimeError(error or f"password_verify_http_{getattr(resp, 'status_code', '')}")
+            body = ""
+            try:
+                body = (resp.text or "")[:500] if resp is not None else ""
+            except Exception:
+                pass
+            raise RuntimeError(error or f"password_verify_http_{getattr(resp, 'status_code', '')}_body={body}")
         step(index, "密码校验完成")
-    
+
         payload = _response_json(resp)
         continue_url = str(payload.get("continue_url") or "").strip()
         page_type = str(((payload.get("page") or {}).get("type")) or "")
-    
+
         if page_type == "email_otp_verification" or "email-verification" in continue_url or "email-otp" in continue_url:
             step(index, "独立登录需要邮箱验证码")
             code = wait_for_code(mailbox)
             if not code:
+                login_session.close()
                 raise RuntimeError("独立登录等待验证码超时")
             step(index, f"收到登录验证码: {code}")
-            resp, reason = validate_otp(self.session, self.device_id, code)
+            resp, reason = validate_otp(login_session, login_device_id, code)
             if resp is None or resp.status_code != 200:
                 print("独立登录验证码校验失败响应:", resp.text if resp is not None else "None")
                 data = _response_json(resp) if resp is not None else {}
                 message = str((data.get("error") or {}).get("message") or data.get("message") or "").strip()
+                login_session.close()
                 raise RuntimeError(reason or f"独立登录验证码校验失败{': ' + message if message else ''}")
             otp_payload = _response_json(resp)
             continue_url = str(otp_payload.get("continue_url") or continue_url).strip()
             step(index, "独立登录验证码校验完成")
-    
+
         if not continue_url:
             continue_url = f"{auth_base}/sign-in-with-chatgpt/codex/consent"
-        tokens = exchange_platform_tokens(self.session, self.device_id, code_verifier, continue_url)
+        tokens = exchange_platform_tokens(login_session, login_device_id, code_verifier, continue_url)
+        login_session.close()
         if not tokens:
             raise RuntimeError("token换取失败")
         step(index, "token 换取完成")
