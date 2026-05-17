@@ -20,6 +20,8 @@ domain_lock = Lock()
 provider_lock = Lock()
 domain_index = 0
 provider_index = 0
+cloudmail_token_lock = Lock()
+cloudmail_token_cache: dict[str, tuple[str, float]] = {}
 
 
 def _config(mail_config: dict) -> dict:
@@ -50,6 +52,13 @@ def _next_domain(domains: list[str]) -> str:
         value = domains[domain_index % len(domains)]
         domain_index = (domain_index + 1) % len(domains)
         return value
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
 
 
 def _parse_received_at(value: Any) -> datetime | None:
@@ -236,6 +245,125 @@ class CloudflareTempMailProvider(BaseMailProvider):
         if isinstance(sender, dict):
             sender = sender.get("address") or sender.get("email") or sender.get("name") or ""
         return {"provider": self.name, "mailbox": mailbox["address"], "message_id": str(item.get("id") or item.get("_id") or ""), "subject": str(item.get("subject") or ""), "sender": str(sender), "text_content": text_content, "html_content": html_content, "received_at": _parse_received_at(item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")), "raw": item}
+
+    def close(self) -> None:
+        self.session.close()
+
+
+class CloudMailGenProvider(BaseMailProvider):
+    name = "cloudmail_gen"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.api_base = str(entry["api_base"]).rstrip("/")
+        self.admin_email = str(entry.get("admin_email") or "").strip()
+        self.admin_password = str(entry.get("admin_password") or "").strip()
+        self.domain = _normalize_string_list(entry.get("domain"))
+        self.subdomain = _normalize_string_list(entry.get("subdomain"))
+        self.email_prefix = str(entry.get("email_prefix") or "").strip()
+        self.session = curl_requests.Session(impersonate="chrome")
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        headers: dict | None = None,
+        params: dict | None = None,
+        payload: dict | None = None,
+        expected: tuple[int, ...] = (200,),
+    ):
+        resp = self.session.request(
+            method.upper(),
+            f"{self.api_base}{path}",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": self.conf["user_agent"],
+                **(headers or {}),
+            },
+            params=params,
+            json=payload,
+            timeout=self.conf["request_timeout"],
+            verify=False,
+        )
+        if resp.status_code not in expected:
+            raise RuntimeError(f"CloudMailGen 请求失败: {method} {path}, HTTP {resp.status_code}, body={resp.text[:300]}")
+        return {} if resp.status_code == 204 else resp.json()
+
+    def _cache_key(self) -> str:
+        return f"{self.api_base}|{self.admin_email}"
+
+    def _get_token(self) -> str:
+        if not self.admin_email or not self.admin_password:
+            raise RuntimeError("CloudMailGen 缺少 admin_email 或 admin_password")
+        cache_key = self._cache_key()
+        now = time.time()
+        with cloudmail_token_lock:
+            cached = cloudmail_token_cache.get(cache_key)
+            if cached and now < cached[1] - 300:
+                return cached[0]
+        data = self._request(
+            "POST",
+            "/api/public/genToken",
+            payload={"email": self.admin_email, "password": self.admin_password},
+        )
+        token = ""
+        if isinstance(data, dict) and data.get("code") == 200:
+            token = str((data.get("data") or {}).get("token") or "").strip()
+        if not token:
+            raise RuntimeError(f"CloudMailGen genToken 返回异常: {data}")
+        with cloudmail_token_lock:
+            cloudmail_token_cache[cache_key] = (token, now + 24 * 3600)
+        return token
+
+    def _resolve_address(self, username: str | None = None) -> str:
+        domain = _next_domain(self.domain)
+        if self.subdomain:
+            domain = f"{random.choice(self.subdomain)}.{domain}"
+        if username:
+            local_part = username
+        elif self.email_prefix:
+            local_part = f"{self.email_prefix}_{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+        else:
+            local_part = _random_mailbox_name()
+        return f"{local_part}@{domain}"
+
+    def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        if not self.domain:
+            raise RuntimeError("CloudMailGen 需要至少配置一个 domain")
+        address = self._resolve_address(username)
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address}
+
+    def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
+        address = str(mailbox.get("address") or "").strip()
+        if not address:
+            raise RuntimeError("CloudMailGen 缺少 address")
+        token = self._get_token()
+        data = self._request(
+            "POST",
+            "/api/public/emailList",
+            headers={"Authorization": token},
+            payload={"toEmail": address, "size": 20, "timeSort": "desc"},
+        )
+        items = (data.get("data") or []) if isinstance(data, dict) and data.get("code") == 200 else []
+        messages = [item for item in items if isinstance(item, dict) and _message_matches_email(item, address)]
+        if not messages:
+            return None
+        item = messages[0]
+        text_content, html_content = _extract_content(item)
+        return {
+            "provider": self.name,
+            "mailbox": address,
+            "message_id": str(item.get("id") or item.get("_id") or item.get("messageId") or ""),
+            "subject": str(item.get("subject") or ""),
+            "sender": str(item.get("from") or item.get("sender") or ""),
+            "text_content": text_content,
+            "html_content": html_content,
+            "received_at": _parse_received_at(
+                item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")
+            ),
+            "to": item.get("to") or item.get("toEmail") or item.get("mailTo"),
+            "raw": item,
+        }
 
     def close(self) -> None:
         self.session.close()
@@ -635,6 +763,8 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
     entry = next((dict(item) for item in _entries(mail_config) if provider_ref and item["provider_ref"] == provider_ref), None)
     entry = entry or next((dict(item) for item in _enabled_entries(mail_config) if provider and item["type"] == provider), None) or _next_entry(mail_config)
     conf = _config(mail_config)
+    if entry["type"] == "cloudmail_gen":
+        return CloudMailGenProvider(entry, conf)
     if entry["type"] == "cloudflare_temp_email":
         return CloudflareTempMailProvider(entry, conf)
     if entry["type"] == "tempmail_lol":
