@@ -228,6 +228,14 @@ class AccountService:
                    and (token := item.get("access_token") or "")
             ]
 
+    def list_all_tokens(self) -> list[str]:
+        with self._lock:
+            return [
+                token
+                for item in self._accounts.values()
+                if (token := item.get("access_token") or "")
+            ]
+
     def add_accounts(self, tokens: list[str]) -> dict:
         tokens = list(dict.fromkeys(token for token in tokens if token))
         if not tokens:
