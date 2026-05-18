@@ -690,7 +690,8 @@ class PlatformRegistrar:
         email = str(mailbox.get("address") or "").strip()
         if not email:
             raise RuntimeError("邮箱服务未返回 address")
-        step(index, f"邮箱创建完成: {email}")
+        label = str(mailbox.get("label") or "")
+        step(index, f"邮箱创建完成[{label}]: {email}")
         password = _random_password()
         first_name, last_name = _random_name()
         self._platform_authorize(email, index)

@@ -289,6 +289,7 @@ class DDGMailProvider(BaseMailProvider):
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.label = str(entry.get("label") or self.provider_ref)
         self.ddg_token = str(entry["ddg_token"]).strip()
         self.cf_api_base = str(entry.get("api_base") or entry.get("cf_api_base") or "").rstrip("/")
         self.cf_inbox_jwt = str(entry.get("cf_inbox_jwt") or "").strip()
@@ -349,14 +350,14 @@ class DDGMailProvider(BaseMailProvider):
         ddg_address = f"{ddg_address_part}@duck.com"
 
         if _is_ddg_alias_duplicate(ddg_address):
-            raise RuntimeError(f"DDG日上限已达，别名 {ddg_address} 已存在，自动切换邮箱提供商")
+            raise RuntimeError(f"[{self.label}] DDG日上限已达，别名 {ddg_address} 已存在，自动切换邮箱提供商")
 
         _record_ddg_alias(ddg_address)
 
         if not self.cf_inbox_jwt:
             raise RuntimeError("DDGMail 需要 cf_inbox_jwt（DDG 转发目标的固定收件箱 JWT），请在邮箱配置中填写 CF Inbox JWT")
 
-        return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt}
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt, "label": self.label}
 
     def _parse_raw_recipient(self, raw_text: str) -> str:
         if not raw_text:
@@ -777,7 +778,16 @@ class YydsMailProvider(BaseMailProvider):
 
 
 def _entries(mail_config: dict) -> list[dict]:
-    return [{**item, "provider_ref": f"{item['type']}#{index + 1}"} for index, item in enumerate(mail_config["providers"])]
+    result: list[dict] = []
+    counters: dict[str, int] = {}
+    for item in mail_config["providers"]:
+        idx = len(result) + 1
+        t = item.get("type", "")
+        cnt = counters.get(t, 0) + 1
+        counters[t] = cnt
+        label = f"DDG-{cnt}" if t == "ddg_mail" else f"{t}#{idx}"
+        result.append({**item, "provider_ref": f"{item['type']}#{idx}", "label": label})
+    return result
 
 
 def _enabled_entries(mail_config: dict) -> list[dict]:
