@@ -98,6 +98,33 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
     return thread
 
 
+def start_full_account_refresh_watcher(stop_event: Event) -> Thread:
+    """每隔 10 分钟刷新所有账号信息和额度，自动发现并清理封禁账号。"""
+    interval_seconds = 10 * 60
+
+    def worker() -> None:
+        # 启动后等待一个周期再开始首次刷新，避免启动时与其他初始化冲突
+        stop_event.wait(interval_seconds)
+        while not stop_event.is_set():
+            try:
+                all_tokens = account_service.list_all_tokens()
+                if all_tokens:
+                    print(f"[account-full-refresh] refreshing all {len(all_tokens)} accounts")
+                    result = account_service.refresh_accounts(all_tokens)
+                    refreshed = result.get("refreshed", 0)
+                    errors = result.get("errors", [])
+                    print(f"[account-full-refresh] done: refreshed={refreshed}, errors={len(errors)}")
+                else:
+                    print("[account-full-refresh] no accounts to refresh")
+            except Exception as exc:
+                print(f"[account-full-refresh] fail {exc}")
+            stop_event.wait(interval_seconds)
+
+    thread = Thread(target=worker, name="full-account-refresh", daemon=True)
+    thread.start()
+    return thread
+
+
 def resolve_web_asset(requested_path: str) -> Path | None:
     if not WEB_DIST_DIR.exists():
         return None
