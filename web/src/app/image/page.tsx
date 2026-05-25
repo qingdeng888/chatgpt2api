@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { History, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -45,11 +45,16 @@ import {
 const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_id";
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
+const SCROLL_TO_LATEST_THRESHOLD = 160;
 
 function clampImageCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
 }
 const activeConversationQueueIds = new Set<string>();
+
+function getResultsDistanceFromBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight;
+}
 
 function buildConversationTitle(prompt: string) {
   const trimmed = prompt.trim();
@@ -341,6 +346,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const didLoadQuotaRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
   const resultsViewportRef = useRef<HTMLDivElement>(null);
+  const lastConversationIdRef = useRef<string | null>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const scrollRafRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -357,6 +365,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [lightboxImages, setLightboxImages] = useState<ImageLightboxItem[]>([]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<
     | { type: "one"; id: string }
     | { type: "prompt"; conversationId: string; turnId: string }
@@ -402,6 +411,46 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  const scrollResultsToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const element = resultsViewportRef.current;
+    if (!element) {
+      return;
+    }
+
+    shouldStickToBottomRef.current = true;
+    setShowScrollToLatest(false);
+    element.scrollTo({
+      top: element.scrollHeight,
+      behavior,
+    });
+  }, []);
+
+  const handleResultsScroll = useCallback(() => {
+    if (scrollRafRef.current !== null) {
+      return;
+    }
+
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const element = resultsViewportRef.current;
+      if (!element) {
+        return;
+      }
+
+      const isAwayFromLatest = getResultsDistanceFromBottom(element) > SCROLL_TO_LATEST_THRESHOLD;
+      shouldStickToBottomRef.current = !isAwayFromLatest;
+      setShowScrollToLatest(isAwayFromLatest);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -476,14 +525,36 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   useEffect(() => {
     if (!selectedConversation) {
+      lastConversationIdRef.current = null;
+      shouldStickToBottomRef.current = true;
+      setShowScrollToLatest(false);
       return;
     }
 
-    resultsViewportRef.current?.scrollTo({
-      top: resultsViewportRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [selectedConversation?.updatedAt, selectedConversation?.turns.length, selectedConversation]);
+    const element = resultsViewportRef.current;
+    if (!element) {
+      return;
+    }
+
+    const didSwitchConversation = lastConversationIdRef.current !== selectedConversation.id;
+    lastConversationIdRef.current = selectedConversation.id;
+
+    if (didSwitchConversation) {
+      requestAnimationFrame(() => scrollResultsToLatest("auto"));
+      return;
+    }
+
+    const shouldFollowLatest =
+      shouldStickToBottomRef.current ||
+      getResultsDistanceFromBottom(element) <= SCROLL_TO_LATEST_THRESHOLD;
+
+    if (shouldFollowLatest) {
+      requestAnimationFrame(() => scrollResultsToLatest("smooth"));
+      return;
+    }
+
+    setShowScrollToLatest(true);
+  }, [selectedConversation?.id, selectedConversation?.updatedAt, selectedConversation?.turns.length, scrollResultsToLatest]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -566,6 +637,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   }, [clearComposerInputs]);
 
   const handleCreateDraft = () => {
+    shouldStickToBottomRef.current = true;
+    setShowScrollToLatest(false);
     setSelectedConversationId(null);
     resetComposer();
     textareaRef.current?.focus();
@@ -1110,8 +1183,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           createdAt: now,
           updatedAt: now,
           turns: [draftTurn],
-        };
+      };
 
+    shouldStickToBottomRef.current = true;
+    setShowScrollToLatest(false);
     setSelectedConversationId(conversationId);
     clearComposerInputs();
 
@@ -1203,21 +1278,36 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             </Button>
           </div>
 
-          <div
-            ref={resultsViewportRef}
-            className="hide-scrollbar min-h-0 flex-1 overscroll-contain overflow-y-auto px-1 py-2 sm:px-4 sm:py-4"
-          >
-            <ImageResults
-              selectedConversation={selectedConversation}
-              onOpenLightbox={openLightbox}
-              onContinueEdit={handleContinueEdit}
-              onDeletePrompt={openDeletePromptConfirm}
-              onDeleteResults={openDeleteResultsConfirm}
-              onReuseTurnConfig={handleReuseTurnConfig}
-              onRegenerateTurn={handleRegenerateTurn}
-              onRetryImage={handleRetryImage}
-              formatConversationTime={formatConversationTime}
-            />
+          <div className="relative min-h-0 flex-1">
+            <div
+              ref={resultsViewportRef}
+              onScroll={handleResultsScroll}
+              className="hide-scrollbar h-full overscroll-contain scroll-smooth overflow-y-auto px-1 py-2 sm:px-4 sm:py-4"
+            >
+              <ImageResults
+                selectedConversation={selectedConversation}
+                onOpenLightbox={openLightbox}
+                onContinueEdit={handleContinueEdit}
+                onDeletePrompt={openDeletePromptConfirm}
+                onDeleteResults={openDeleteResultsConfirm}
+                onReuseTurnConfig={handleReuseTurnConfig}
+                onRegenerateTurn={handleRegenerateTurn}
+                onRetryImage={handleRetryImage}
+                formatConversationTime={formatConversationTime}
+              />
+            </div>
+
+            {showScrollToLatest ? (
+              <button
+                type="button"
+                aria-label="滚动到最新消息"
+                title="滚动到最新消息"
+                onClick={() => scrollResultsToLatest("smooth")}
+                className="absolute bottom-4 left-1/2 z-20 inline-flex size-11 -translate-x-1/2 items-center justify-center rounded-full border border-stone-200 bg-white/95 text-stone-700 shadow-lg shadow-stone-200/60 backdrop-blur transition hover:-translate-y-0.5 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400 dark:border-white/10 dark:bg-stone-800/95 dark:text-stone-100 dark:shadow-black/40 dark:hover:bg-stone-700"
+              >
+                <ArrowDown className="size-5" />
+              </button>
+            ) : null}
           </div>
 
           <ImageComposer
