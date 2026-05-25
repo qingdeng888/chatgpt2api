@@ -68,6 +68,7 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "mode": task.get("mode"),
         "model": task.get("model"),
         "size": task.get("size"),
+        "quality": task.get("quality"),
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
@@ -109,13 +110,15 @@ class ImageTaskService:
         prompt: str,
         model: str,
         size: str | None,
-        base_url: str,
+        quality: str = "auto",
+        base_url: str = "",
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
             "model": model,
             "n": 1,
             "size": size,
+            "quality": quality,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -129,15 +132,17 @@ class ImageTaskService:
         prompt: str,
         model: str,
         size: str | None,
-        base_url: str,
-        images: list[tuple[bytes, str, str]],
+        quality: str = "auto",
+        base_url: str = "",
+        images: list[tuple[bytes, str, str]] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
-            "images": images,
+            "images": images or [],
             "model": model,
             "n": 1,
             "size": size,
+            "quality": quality,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -196,6 +201,7 @@ class ImageTaskService:
                 "mode": mode,
                 "model": _clean(payload.get("model"), "gpt-image-2"),
                 "size": _clean(payload.get("size")),
+                "quality": _clean(payload.get("quality"), "auto"),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -334,6 +340,7 @@ class ImageTaskService:
                 "mode": "edit" if item.get("mode") == "edit" else "generate",
                 "model": _clean(item.get("model"), "gpt-image-2"),
                 "size": _clean(item.get("size")),
+                "quality": _clean(item.get("quality"), "auto"),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
                 "updated_at": _clean(item.get("updated_at"), _clean(item.get("created_at"), _now_iso())),
             }
