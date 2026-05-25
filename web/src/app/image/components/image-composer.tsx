@@ -1,6 +1,6 @@
 "use client";
 import { ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type RefObject } from "react";
 
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,24 @@ type ImageComposerProps = {
   onRemoveReferenceImage: (index: number) => void;
 };
 
+const imageFileNamePattern = /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|tiff?|webp)$/i;
+
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || (!file.type && imageFileNamePattern.test(file.name));
+}
+
+function hasDraggedImages(dataTransfer: DataTransfer) {
+  const items = Array.from(dataTransfer.items || []);
+  if (items.length > 0) {
+    return items.some((item) => item.kind === "file" && (item.type.startsWith("image/") || !item.type));
+  }
+  return Array.from(dataTransfer.files || []).some(isImageFile);
+}
+
+function getDraggedImageFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.files || []).filter(isImageFile);
+}
+
 export function ImageComposer({
   prompt,
   imageCount,
@@ -46,6 +64,7 @@ export function ImageComposer({
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [isSizeMenuOpen, setIsSizeMenuOpen] = useState(false);
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [sizeMenuPos, setSizeMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const sizeMenuRef = useRef<HTMLDivElement>(null);
   const sizeMenuBtnRef = useRef<HTMLButtonElement>(null);
@@ -85,6 +104,50 @@ export function ImageComposer({
     }
 
     event.preventDefault();
+    void onReferenceImageChange(imageFiles);
+  };
+
+  const handleComposerDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedImages(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsSizeMenuOpen(false);
+    setIsDraggingImage(true);
+  };
+
+  const handleComposerDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedImages(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDraggingImage(true);
+  };
+
+  const handleComposerDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setIsDraggingImage(false);
+  };
+
+  const handleComposerDrop = (event: DragEvent<HTMLDivElement>) => {
+    const imageFiles = getDraggedImageFiles(event.dataTransfer);
+    if (event.dataTransfer.files.length > 0 || imageFiles.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    setIsDraggingImage(false);
+    if (imageFiles.length === 0) {
+      return;
+    }
+
     void onReferenceImageChange(imageFiles);
   };
 
@@ -137,9 +200,18 @@ export function ImageComposer({
           </div>
         ) : null}
 
-        <div className="overflow-hidden rounded-[24px] border border-stone-200 bg-white shadow-[0_14px_60px_-42px_rgba(15,23,42,0.45)] dark:border-white/10 dark:bg-stone-950/80 sm:rounded-[32px] sm:shadow-none">
+        <div
+          className={cn(
+            "overflow-hidden rounded-[24px] border border-stone-200 bg-white shadow-[0_14px_60px_-42px_rgba(15,23,42,0.45)] transition dark:border-white/10 dark:bg-stone-950/80 sm:rounded-[32px] sm:shadow-none",
+            isDraggingImage && "border-stone-900 bg-stone-50",
+          )}
+        >
           <div
             className="relative cursor-text"
+            onDragEnter={handleComposerDragEnter}
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
             onClick={() => {
               textareaRef.current?.focus();
             }}
@@ -169,6 +241,14 @@ export function ImageComposer({
               }}
               className="min-h-[82px] resize-none rounded-[24px] border-0 bg-transparent px-4 pt-4 pb-2 text-[15px] leading-6 text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 dark:text-stone-100 dark:placeholder:text-stone-500 sm:min-h-[148px] sm:rounded-[32px] sm:px-6 sm:pt-6 sm:pb-20 sm:leading-7"
             />
+            {isDraggingImage ? (
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[24px] border-2 border-dashed border-stone-900 bg-white/85 text-sm font-medium text-stone-900 backdrop-blur-[1px] sm:rounded-[32px]">
+                <div className="flex items-center gap-2 rounded-full bg-stone-950 px-4 py-2 text-white shadow-lg">
+                  <ImagePlus className="size-4" />
+                  <span>松开以上传参考图</span>
+                </div>
+              </div>
+            ) : null}
 
             <div className="rounded-b-[24px] border-t border-stone-100 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-stone-950/95 sm:absolute sm:inset-x-0 sm:bottom-0 sm:rounded-b-none sm:border-t-0 sm:bg-gradient-to-t sm:from-white sm:via-white/95 sm:to-transparent sm:px-6 sm:pb-4 sm:pt-6 sm:dark:from-stone-950 sm:dark:via-stone-950/95 sm:dark:to-stone-950/0" onClick={(event) => event.stopPropagation()}>
               <div className="flex items-end justify-between gap-2 sm:gap-3">
