@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Clock3, Download, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronUp, Clock3, Download, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ImageConversation, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
+import type { ImageConversation, ImageTurn, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
 
 export type ImageLightboxItem = {
   id: string;
@@ -13,6 +13,39 @@ export type ImageLightboxItem = {
   sizeLabel?: string;
   dimensions?: string;
 };
+
+const INITIAL_VISIBLE_IMAGE_COUNT = 20;
+const LOAD_MORE_INCREMENT = 20;
+
+function getTurnImageCount(turn: ImageTurn) {
+  return turn.resultsDeleted ? 0 : turn.images.length;
+}
+
+/**
+ * 从最新一轮往回累计可见图片数，返回应当渲染的起始 turn 索引。
+ * - 始终至少渲染最新的一轮（即便它本身就超过了限额）。
+ * - 包含某一旧轮后，如果再往前一轮会超出限额，就停在当前位置。
+ */
+function computeVisibleStartIndex(turns: ImageTurn[], visibleImageLimit: number): number {
+  if (turns.length === 0) {
+    return 0;
+  }
+  let imageCount = 0;
+  let startIndex = turns.length - 1;
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turnImageCount = getTurnImageCount(turns[i]);
+    const isLast = i === turns.length - 1;
+    if (!isLast && imageCount + turnImageCount > visibleImageLimit) {
+      break;
+    }
+    imageCount += turnImageCount;
+    startIndex = i;
+    if (imageCount >= visibleImageLimit) {
+      break;
+    }
+  }
+  return startIndex;
+}
 
 type ImageResultsProps = {
   selectedConversation: ImageConversation | null;
@@ -68,6 +101,27 @@ export function ImageResults({
   formatConversationTime,
 }: ImageResultsProps) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
+  const [visibleImageLimit, setVisibleImageLimit] = useState(INITIAL_VISIBLE_IMAGE_COUNT);
+
+  // 切换对话时重置可见图片上限，避免上一对话的展开状态影响新对话
+  useEffect(() => {
+    setVisibleImageLimit(INITIAL_VISIBLE_IMAGE_COUNT);
+  }, [selectedConversation?.id]);
+
+  const allTurns = selectedConversation?.turns ?? [];
+  const visibleStartIndex = useMemo(
+    () => computeVisibleStartIndex(allTurns, visibleImageLimit),
+    [allTurns, visibleImageLimit],
+  );
+  const hiddenTurnCount = visibleStartIndex;
+  const hiddenImageCount = useMemo(() => {
+    let total = 0;
+    for (let i = 0; i < visibleStartIndex; i += 1) {
+      total += getTurnImageCount(allTurns[i]);
+    }
+    return total;
+  }, [allTurns, visibleStartIndex]);
+  const hasHiddenTurns = hiddenTurnCount > 0;
 
   const updateImageDimensions = (id: string, width: number, height: number) => {
     const dimensions = formatImageDimensions(width, height);
@@ -106,7 +160,34 @@ export function ImageResults({
 
   return (
     <div className="mx-auto flex w-full max-w-[980px] flex-col gap-5 sm:gap-8">
-      {selectedConversation.turns.map((turn, turnIndex) => {
+      {hasHiddenTurns ? (
+        <div className="flex flex-col items-center gap-2">
+          <div className="text-[11px] text-stone-400 sm:text-xs">
+            已隐藏更早的 {hiddenTurnCount} 轮（约 {hiddenImageCount} 张图片）以提升加载速度
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50"
+              onClick={() => setVisibleImageLimit((prev) => prev + LOAD_MORE_INCREMENT)}
+            >
+              <ChevronUp className="size-3.5" />
+              加载更早 {Math.min(LOAD_MORE_INCREMENT, hiddenImageCount)} 张
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50"
+              onClick={() => setVisibleImageLimit(Number.POSITIVE_INFINITY)}
+            >
+              全部加载
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {allTurns.slice(visibleStartIndex).map((turn, relativeIndex) => {
+        const turnIndex = visibleStartIndex + relativeIndex;
         const referenceLightboxImages = turn.referenceImages.map((image, index) => ({
           id: `${turn.id}-reference-${index}`,
           src: image.dataUrl,
