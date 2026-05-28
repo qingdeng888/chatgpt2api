@@ -14,16 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import requests
-import urllib3
-from curl_cffi import requests as curl_requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from curl_cffi import requests
 
 from services.account_service import account_service
 from services.register import mail_provider
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 base_dir = Path(__file__).resolve().parent
 config = {
     "mail": {
@@ -169,15 +164,36 @@ def _response_json(resp) -> dict:
         return {}
 
 
-def _decode_jwt_payload(token: str) -> dict:
-    try:
-        payload = token.split(".")[1]
-        padding = 4 - len(payload) % 4
-        if padding != 4:
-            payload += "=" * padding
-        return json.loads(base64.urlsafe_b64decode(payload))
-    except Exception:
-        return {}
+def _response_debug_detail(resp, limit: int = 800) -> str:
+    if resp is None:
+        return ""
+    data = _response_json(resp)
+    parts = [
+        f"url={str(getattr(resp, 'url', '') or '')[:300]}",
+        f"content_type={str(getattr(resp, 'headers', {}).get('content-type') or '')}",
+    ]
+    for key in ("cf-ray", "x-request-id", "openai-processing-ms"):
+        value = str(getattr(resp, "headers", {}).get(key) or "").strip()
+        if value:
+            parts.append(f"{key}={value}")
+    if data:
+        parts.append(f"json={json.dumps(data, ensure_ascii=False)[:limit]}")
+    else:
+        parts.append(f"body={str(getattr(resp, 'text', '') or '')[:limit]}")
+    return ", ".join(parts)
+
+
+def _is_cloudflare_challenge(resp) -> bool:
+    if resp is None:
+        return False
+    text = str(getattr(resp, "text", "") or "").lower()
+    headers = getattr(resp, "headers", {}) or {}
+    server = str(headers.get("server") or "").lower()
+    return (
+        "cloudflare" in server
+        or "challenges.cloudflare.com" in text
+        or "<title>just a moment" in text
+    )
 
 
 def create_mailbox(username: str | None = None) -> dict:
@@ -286,23 +302,11 @@ def build_sentinel_token(session: requests.Session, device_id: str, flow: str) -
     return json.dumps({"p": p_value, "t": "", "c": token, "id": device_id, "flow": flow}, separators=(",", ":"))
 
 
-def _is_socks_proxy(proxy: str) -> bool:
-    candidate = str(proxy or "").strip().lower()
-    return candidate.startswith("socks5://") or candidate.startswith("socks5h://")
-
-
 def create_session(proxy: str = "") -> Any:
-    if _is_socks_proxy(proxy):
-        return curl_requests.Session(impersonate="chrome", verify=False, proxy=proxy)
-    session = requests.Session()
-    retry = Retry(total=2, connect=2, read=2, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504))
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    session.verify = False
+    kwargs = {"impersonate": "chrome", "verify": False}
     if proxy:
-        session.proxies.update({"http": proxy, "https": proxy})
-    return session
+        kwargs["proxy"] = proxy
+    return requests.Session(**kwargs)
 
 
 def request_with_local_retry(session: requests.Session, method: str, url: str, retry_attempts: int = 3, **kwargs):
@@ -342,111 +346,50 @@ def extract_oauth_callback_params_from_url(url: str) -> dict[str, str] | None:
     return {"code": code, "state": str((params.get("state") or [""])[0]).strip(), "scope": str((params.get("scope") or [""])[0]).strip()}
 
 
-def extract_oauth_callback_params_from_consent_session(session: requests.Session, consent_url: str, device_id: str) -> dict[str, str] | None:
-    if consent_url.startswith("/"):
-        consent_url = f"{auth_base}{consent_url}"
-    current_url = consent_url
-    for _ in range(10):
-        response = session.get(current_url, headers=navigate_headers, verify=False, timeout=30, allow_redirects=False)
-        callback_params = extract_oauth_callback_params_from_url(str(response.url)) or extract_oauth_callback_params_from_url(str(response.headers.get("Location") or "").strip())
-        if callback_params:
-            return callback_params
-        location = str(response.headers.get("Location") or "").strip()
-        if response.status_code not in (301, 302, 303, 307, 308) or not location:
-            break
-        current_url = f"{auth_base}{location}" if location.startswith("/") else location
-    raw = session.cookies.get("oai-client-auth-session", domain=".auth.openai.com") or session.cookies.get("oai-client-auth-session")
-    if not raw:
-        return None
-    try:
-        first_part = raw.split(".")[0]
-        padding = 4 - len(first_part) % 4
-        if padding != 4:
-            first_part += "=" * padding
-        payload = json.loads(base64.urlsafe_b64decode(first_part))
-        workspace_id = payload["workspaces"][0]["id"]
-    except Exception:
-        return None
-    headers = dict(common_headers)
-    headers["referer"] = consent_url
-    headers["oai-device-id"] = device_id
-    headers.update(_make_trace_headers())
-    ws_resp = session.post(f"{auth_base}/api/accounts/workspace/select", json={"workspace_id": workspace_id}, headers=headers, verify=False, timeout=30, allow_redirects=False)
-    callback_params = extract_oauth_callback_params_from_url(str(ws_resp.headers.get("Location") or "").strip())
-    if callback_params:
-        return callback_params
-    ws_data = _response_json(ws_resp)
-    orgs = ((ws_data.get("data") or {}).get("orgs") or []) if isinstance(ws_data, dict) else []
-    if not orgs:
-        return None
-    org_id = str((orgs[0] or {}).get("id") or "").strip()
-    project_id = str(((orgs[0] or {}).get("projects") or [{}])[0].get("id") or "").strip()
-    if not org_id:
-        return None
-    org_headers = dict(common_headers)
-    org_headers["referer"] = str(ws_data.get("continue_url") or consent_url)
-    org_headers["oai-device-id"] = device_id
-    org_headers.update(_make_trace_headers())
-    body = {"org_id": org_id}
-    if project_id:
-        body["project_id"] = project_id
-    org_resp = session.post(f"{auth_base}/api/accounts/organization/select", json=body, headers=org_headers, verify=False, timeout=30, allow_redirects=False)
-    return extract_oauth_callback_params_from_url(str(org_resp.headers.get("Location") or "").strip())
-
-
-def exchange_platform_tokens(session: requests.Session, device_id: str, code_verifier: str, consent_url: str) -> dict | None:
-    callback_params = extract_oauth_callback_params_from_consent_session(session, consent_url, device_id)
-    if not callback_params:
-        # 回退方案：直接导航 consent URL（allow_redirects=True），从最终 URL 提取 code
-        print(f"[exchange_platform_tokens] 主方案失败，尝试回退方案, continue_url={consent_url[:120]}")
-        try:
-            r = session.get(consent_url, headers=navigate_headers, allow_redirects=True, verify=False, timeout=30)
-            final_url = str(r.url)
-            print(f"[exchange_platform_tokens] 回退 final_url={final_url[:120]}")
-            callback_params = extract_oauth_callback_params_from_url(final_url)
-            if not callback_params:
-                for hist in getattr(r, "history", []) or []:
-                    loc = str(hist.headers.get("Location") or "")
-                    callback_params = extract_oauth_callback_params_from_url(loc)
-                    if callback_params:
-                        break
-        except Exception as e:
-            print(f"[exchange_platform_tokens] 回退方案异常: {e}")
-    if not callback_params:
-        print("[exchange_platform_tokens] 所有方案均无法提取 OAuth code")
-        return None
-    code = str(callback_params.get("code") or "").strip()
-    if not code:
-        return None
-    resp = create_session(config["proxy"]).post(
-        f"{auth_base}/oauth/token",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={
+def request_platform_oauth_token(session: requests.Session, code: str, code_verifier: str) -> dict | None:
+    headers = {
+        "accept": "*/*",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "auth0-client": platform_auth0_client,
+        "cache-control": "no-cache",
+        "content-type": "application/json",
+        "origin": platform_base,
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "referer": f"{platform_base}/",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+        "user-agent": user_agent,
+    }
+    resp = session.post(
+        f"{auth_base}/api/accounts/oauth/token",
+        headers=headers,
+        json={
+            "client_id": platform_oauth_client_id,
+            "code_verifier": code_verifier,
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": platform_oauth_redirect_uri,
-            "client_id": platform_oauth_client_id,
-            "code_verifier": code_verifier,
         },
         verify=False,
         timeout=60,
     )
-    data = _response_json(resp)
-    if resp.status_code != 200 or not data.get("access_token") or not data.get("refresh_token") or not data.get("id_token"):
+    if resp.status_code != 200:
+        print(resp.text)
         return None
-    payload = _decode_jwt_payload(str(data.get("id_token") or "")) or _decode_jwt_payload(str(data.get("access_token") or ""))
-    return {
-        "email": str(payload.get("email") or "").strip(),
-        "access_token": str(data.get("access_token") or "").strip(),
-        "refresh_token": str(data.get("refresh_token") or "").strip(),
-        "id_token": str(data.get("id_token") or "").strip(),
-    }
+    return _response_json(resp)
 
 
 class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
         self.session = create_session(proxy)
         self.device_id = str(uuid.uuid4())
+        self.code_verifier = ""
+        self.platform_auth_code = ""
 
     def close(self) -> None:
         self.session.close()
@@ -468,7 +411,7 @@ class PlatformRegistrar:
         step(index, "开始 platform authorize")
         self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
         self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
-        _, code_challenge = _generate_pkce()
+        self.code_verifier, code_challenge = _generate_pkce()
         params = {
             "issuer": auth_base,
             "client_id": platform_oauth_client_id,
@@ -491,7 +434,11 @@ class PlatformRegistrar:
         if resp is None or resp.status_code != 200:
             err = _response_json(resp).get("error", {}) if resp is not None else {}
             detail = f": {err.get('code', '')} - {err.get('message', '')}".strip(" -") if err else ""
-            raise RuntimeError(error or f"platform_authorize_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
+            if _is_cloudflare_challenge(resp):
+                raise RuntimeError("被 Cloudflare 拦截，请更换 IP 重试")
+            debug = _response_debug_detail(resp)
+            status = getattr(resp, "status_code", "unknown")
+            raise RuntimeError(error or f"platform_authorize_http_{status}{detail}, {debug}")
         step(index, "platform authorize 完成")
 
     def _register_user(self, email: str, password: str, index: int) -> None:
@@ -537,170 +484,14 @@ class PlatformRegistrar:
                 step(index, "创建账号失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
+        data = _response_json(resp)
+        callback_params = extract_oauth_callback_params_from_url(str(data.get("continue_url") or "").strip())
+        self.platform_auth_code = str((callback_params or {}).get("code") or "").strip()
         step(index, "创建账号资料完成")
 
-    def _login_and_exchange_tokens(self, email: str, password: str, mailbox: dict, index: int) -> dict:
-        step(index, "开始独立登录换 token")
-        login_session = create_session(config["proxy"])
-        login_device_id = str(uuid.uuid4())
-        login_session.cookies.set("oai-did", login_device_id, domain=".auth.openai.com")
-        login_session.cookies.set("oai-did", login_device_id, domain="auth.openai.com")
-        code_verifier, code_challenge = _generate_pkce()
-        params = {
-            "issuer": auth_base,
-            "client_id": platform_oauth_client_id,
-            "audience": platform_oauth_audience,
-            "redirect_uri": platform_oauth_redirect_uri,
-            "device_id": login_device_id,
-            "screen_hint": "login_or_signup",
-            "max_age": "0",
-            "login_hint": email,
-            "scope": "openid profile email offline_access",
-            "response_type": "code",
-            "response_mode": "query",
-            "state": secrets.token_urlsafe(32),
-            "nonce": secrets.token_urlsafe(32),
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "auth0Client": platform_auth0_client,
-        }
-
-        def _login_nav_headers(referer: str = "") -> dict[str, str]:
-            h = dict(navigate_headers)
-            if referer:
-                h["referer"] = referer
-            return h
-
-        def _login_json_headers(referer: str) -> dict[str, str]:
-            h = dict(common_headers)
-            h["referer"] = referer
-            h["oai-device-id"] = login_device_id
-            h.update(_make_trace_headers())
-            return h
-
-        def _clear_login_auth_cookies() -> None:
-            for cookie in list(login_session.cookies):
-                if "auth.openai.com" in str(cookie.domain):
-                    login_session.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
-            login_session.cookies.set("oai-did", login_device_id, domain=".auth.openai.com")
-            login_session.cookies.set("oai-did", login_device_id, domain="auth.openai.com")
-
-        def _do_login_authorize(label: str) -> None:
-            nonlocal resp, error
-            resp, error = request_with_local_retry(
-                login_session, "get",
-                f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
-                headers=_login_nav_headers(f"{platform_base}/"),
-                allow_redirects=True, verify=False
-            )
-            if resp is None:
-                raise RuntimeError(error or f"platform_login_authorize_{label}_failed")
-            if resp.status_code not in (200, 302):
-                raise RuntimeError(error or f"platform_login_authorize_{label}_http_{getattr(resp, 'status_code', 'unknown')}")
-            step(index, "登录 authorize 完成" if label == "initial" else f"登录 authorize 重试完成[{label}]")
-
-        # 提交邮箱（原样，不带 state）
-        def _do_authorize_continue():
-            h = _login_json_headers(f"{auth_base}/log-in?usernameKind=email")
-            h["openai-sentinel-token"] = build_sentinel_token(login_session, login_device_id, "authorize_continue")
-            return request_with_local_retry(
-                login_session, "post",
-                f"{auth_base}/api/accounts/authorize/continue",
-                json={"username": {"kind": "email", "value": email}},
-                headers=h,
-                allow_redirects=False,
-                verify=False
-            )
-
-        def _submit_email_with_reauth() -> None:
-            nonlocal resp, error
-            step(index, "开始提交邮箱")
-            for attempt in range(3):
-                if attempt:
-                    step(index, f"邮箱提交 409/状态失效，清理 cookie 后重新 authorize 重试({attempt + 1}/3)", "yellow")
-                    _clear_login_auth_cookies()
-                    _do_login_authorize(f"email-{attempt + 1}")
-                resp, error = _do_authorize_continue()
-                if resp is not None and resp.status_code == 409:
-                    continue
-                break
-            if resp is None or resp.status_code != 200:
-                data = _response_json(resp) if resp is not None else {}
-                detail = json.dumps(data, ensure_ascii=False) if data else ""
-                raise RuntimeError(
-                    error or f"email_submit_http_{getattr(resp, 'status_code', 'unknown')}"
-                    + (f": {detail}" if detail else "")
-                )
-            step(index, "邮箱提交完成")
-
-        def _verify_password_once():
-            headers = _login_json_headers(f"{auth_base}/log-in/password")
-            headers["openai-sentinel-token"] = build_sentinel_token(
-                login_session, login_device_id, "password_verify"
-            )
-            return request_with_local_retry(
-                login_session, "post",
-                f"{auth_base}/api/accounts/password/verify",
-                json={"password": password},
-                headers=headers,
-                allow_redirects=False,
-                verify=False
-            )
-
-        def _verify_password_with_reauth() -> None:
-            nonlocal resp, error
-            step(index, "开始密码校验")
-            for attempt in range(3):
-                if attempt:
-                    step(index, f"密码校验 HTTP 409，重新登录状态后重试({attempt + 1}/3)", "yellow")
-                    _clear_login_auth_cookies()
-                    _do_login_authorize(f"password-{attempt + 1}")
-                    _submit_email_with_reauth()
-                resp, error = _verify_password_once()
-                if resp is not None and resp.status_code == 409:
-                    continue
-                break
-            if resp is None or resp.status_code != 200:
-                body = ""
-                try:
-                    body = (resp.text or "")[:500] if resp is not None else ""
-                except Exception:
-                    pass
-                raise RuntimeError(error or f"password_verify_http_{getattr(resp, 'status_code', '')}_body={body}")
-            step(index, "密码校验完成")
-
-        resp = None
-        error = ""
-        _do_login_authorize("initial")
-        _submit_email_with_reauth()
-        _verify_password_with_reauth()
-
-        payload = _response_json(resp)
-        continue_url = str(payload.get("continue_url") or "").strip()
-        page_type = str(((payload.get("page") or {}).get("type")) or "")
-
-        if page_type == "email_otp_verification" or "email-verification" in continue_url or "email-otp" in continue_url:
-            step(index, "独立登录需要邮箱验证码")
-            code = wait_for_code(mailbox)
-            if not code:
-                login_session.close()
-                raise RuntimeError("独立登录等待验证码超时")
-            step(index, f"收到登录验证码: {code}")
-            resp, reason = validate_otp(login_session, login_device_id, code)
-            if resp is None or resp.status_code != 200:
-                print("独立登录验证码校验失败响应:", resp.text if resp is not None else "None")
-                data = _response_json(resp) if resp is not None else {}
-                message = str((data.get("error") or {}).get("message") or data.get("message") or "").strip()
-                login_session.close()
-                raise RuntimeError(reason or f"独立登录验证码校验失败{': ' + message if message else ''}")
-            otp_payload = _response_json(resp)
-            continue_url = str(otp_payload.get("continue_url") or continue_url).strip()
-            step(index, "独立登录验证码校验完成")
-
-        if not continue_url:
-            continue_url = f"{auth_base}/sign-in-with-chatgpt/codex/consent"
-        tokens = exchange_platform_tokens(login_session, login_device_id, code_verifier, continue_url)
-        login_session.close()
+    def _exchange_registered_tokens(self, index: int) -> dict:
+        step(index, "开始换 token")
+        tokens = request_platform_oauth_token(self.session, self.platform_auth_code, self.code_verifier)
         if not tokens:
             raise RuntimeError("token换取失败")
         step(index, "token 换取完成")
@@ -726,13 +517,14 @@ class PlatformRegistrar:
         step(index, f"收到注册验证码: {code}")
         self._validate_otp(code, index)
         self._create_account(f"{first_name} {last_name}", _random_birthdate(), index)
-        tokens = self._login_and_exchange_tokens(email, password, mailbox, index)
+        tokens = self._exchange_registered_tokens(index)
         return {
             "email": email,
             "password": password,
             "access_token": str(tokens.get("access_token") or "").strip(),
             "refresh_token": str(tokens.get("refresh_token") or "").strip(),
             "id_token": str(tokens.get("id_token") or "").strip(),
+            "source_type": "web",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 

@@ -176,6 +176,7 @@ class AccountService:
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
+        normalized["source_type"] = str(normalized.get("source_type") or "web").strip() or "web"
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
@@ -615,7 +616,7 @@ class AccountService:
         tokens = list(dict.fromkeys(token for token in tokens if token))
         if not tokens:
             return {"added": 0, "skipped": 0, "items": self.list_accounts()}
-        return self._add_account_payloads([{"access_token": token} for token in tokens])
+        return self._add_account_payloads([{"access_token": token, "source_type": "web"} for token in tokens])
 
     def _add_account_payloads(self, payloads: list[dict]) -> dict:
         deduped: dict[str, dict] = {}
