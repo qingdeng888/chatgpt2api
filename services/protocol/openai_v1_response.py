@@ -10,12 +10,20 @@ from fastapi import HTTPException
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
+    count_message_text_tokens,
+    count_text_tokens,
     encode_images,
     stream_image_outputs_with_pool,
     stream_text_deltas,
     text_backend,
 )
 from utils.helper import extract_image_from_message_content, extract_response_prompt, has_response_image_generation_tool
+from utils.image_tokens import (
+    count_image_content_tokens,
+    count_image_output_items_tokens,
+    image_usage,
+    token_usage,
+)
 
 
 def is_text_response_request(body: dict[str, Any]) -> bool:
@@ -47,6 +55,25 @@ def extract_response_image(input_value: object) -> tuple[bytes, str] | None:
             if images:
                 return images[0]
     return None
+
+
+def _input_image_parts(input_value: object) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    if isinstance(input_value, dict):
+        content = input_value.get("content")
+        if isinstance(content, list):
+            parts.extend(item for item in content if isinstance(item, dict))
+        return parts
+    if not isinstance(input_value, list):
+        return parts
+    if all(isinstance(item, dict) and item.get("type") for item in input_value):
+        return [item for item in input_value if isinstance(item, dict)]
+    for item in input_value:
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, list):
+                parts.extend(part for part in content if isinstance(part, dict))
+    return parts
 
 
 def messages_from_input(input_value: object, instructions: object = None) -> list[dict[str, Any]]:
@@ -121,8 +148,14 @@ def response_created(response_id: str, model: str, created: int) -> dict[str, An
     }
 
 
-def response_completed(response_id: str, model: str, created: int, output: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def response_completed(
+    response_id: str,
+    model: str,
+    created: int,
+    output: list[dict[str, Any]],
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    response = {
         "type": "response.completed",
         "response": {
             "id": response_id,
@@ -136,6 +169,9 @@ def response_completed(response_id: str, model: str, created: int, output: list[
             "parallel_tool_calls": False,
         },
     }
+    if usage:
+        response["response"]["usage"] = usage
+    return response
 
 
 def stream_text_response(backend, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -154,10 +190,21 @@ def stream_text_response(backend, body: dict[str, Any]) -> Iterator[dict[str, An
     yield {"type": "response.output_text.done", "item_id": item_id, "output_index": 0, "content_index": 0, "text": full_text}
     item = text_output_item(full_text, item_id, "completed")
     yield {"type": "response.output_item.done", "output_index": 0, "item": item}
-    yield response_completed(response_id, model, created, [item])
+    usage = token_usage(
+        input_text_tokens=count_message_text_tokens(messages, model),
+        output_text_tokens=count_text_tokens(full_text, model),
+    )
+    yield response_completed(response_id, model, created, [item], usage)
 
 
-def stream_image_response(image_outputs: Iterable[ImageOutput], prompt: str, model: str) -> Iterator[dict[str, Any]]:
+def stream_image_response(
+    image_outputs: Iterable[ImageOutput],
+    prompt: str,
+    model: str,
+    input_image_tokens: int = 0,
+    size: object = None,
+    quality: str = "auto",
+) -> Iterator[dict[str, Any]]:
     response_id = f"resp_{uuid.uuid4().hex}"
     created = int(time.time())
     yield response_created(response_id, model, created)
@@ -165,18 +212,28 @@ def stream_image_response(image_outputs: Iterable[ImageOutput], prompt: str, mod
         if output.kind == "message":
             text = output.text
             item = text_output_item(text)
+            usage = token_usage(
+                input_text_tokens=count_text_tokens(prompt, model),
+                input_image_tokens=input_image_tokens,
+                output_text_tokens=count_text_tokens(text, model),
+            )
             yield {"type": "response.output_text.delta", "item_id": item["id"], "output_index": 0, "content_index": 0, "delta": text}
             yield {"type": "response.output_text.done", "item_id": item["id"], "output_index": 0, "content_index": 0, "text": text}
             yield {"type": "response.output_item.done", "output_index": 0, "item": item}
-            yield response_completed(response_id, model, created, [item])
+            yield response_completed(response_id, model, created, [item], usage)
             return
         if output.kind != "result":
             continue
         items = image_output_items(prompt, output.data)
         if items:
             item = items[0]
+            usage = image_usage(
+                input_text_tokens=count_text_tokens(prompt, model),
+                input_image_tokens=input_image_tokens,
+                output_tokens=count_image_output_items_tokens(output.data, size, quality),
+            )
             yield {"type": "response.output_item.done", "output_index": 0, "item": item}
-            yield response_completed(response_id, model, created, [item])
+            yield response_completed(response_id, model, created, [item], usage)
             return
     raise RuntimeError("image generation failed")
 
@@ -206,6 +263,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         images = encode_images([(image_data, "image.png", mime_type)])
     else:
         images = None
+    input_image_tokens = count_image_content_tokens(_input_image_parts(body.get("input")), model)
     tool = response_image_tool(body)
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
@@ -215,7 +273,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response_format="b64_json",
         images=images,
     ))
-    yield from stream_image_response(image_outputs, prompt, model)
+    yield from stream_image_response(image_outputs, prompt, model, input_image_tokens, tool.get("size"), str(tool.get("quality") or "auto"))
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
