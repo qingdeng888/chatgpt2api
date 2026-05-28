@@ -16,7 +16,10 @@ function readAppVersion() {
 }
 
 const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || readAppVersion()
-const appReleases = JSON.stringify(parseChangelog(readFileSync(join(projectRoot, 'CHANGELOG.md'), 'utf-8')))
+let appReleases = '[]'
+try {
+    appReleases = JSON.stringify(parseChangelog(readFileSync(join(projectRoot, 'CHANGELOG.md'), 'utf-8')))
+} catch {}
 
 const nextConfig: NextConfig = {
     allowedDevOrigins: ['127.0.0.1'],
