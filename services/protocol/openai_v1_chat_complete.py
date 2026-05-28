@@ -11,7 +11,8 @@ from services.protocol.conversation import (
     ImageOutput,
     collect_image_outputs,
     collect_text,
-    count_message_tokens,
+    count_message_image_tokens,
+    count_message_text_tokens,
     count_text_tokens,
     encode_images,
     normalize_messages,
@@ -20,6 +21,12 @@ from services.protocol.conversation import (
     text_backend,
 )
 from utils.helper import build_chat_image_markdown_content, extract_chat_image, extract_chat_prompt, is_image_chat_request, parse_image_count
+from utils.image_tokens import (
+    chat_usage_from_image_usage,
+    count_image_inputs_tokens,
+    count_image_output_items_tokens,
+    image_usage,
+)
 
 
 def completion_chunk(model: str, delta: dict[str, Any], finish_reason: str | None = None, completion_id: str = "", created: int | None = None) -> dict[str, Any]:
@@ -38,7 +45,9 @@ def completion_response(
     created: int | None = None,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    prompt_tokens = count_message_tokens(messages, model) if messages else 0
+    prompt_text_tokens = count_message_text_tokens(messages, model) if messages else 0
+    prompt_image_tokens = count_message_image_tokens(messages, model) if messages else 0
+    prompt_tokens = prompt_text_tokens + prompt_image_tokens
     completion_tokens = count_text_tokens(content, model) if messages else 0
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -54,6 +63,14 @@ def completion_response(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {
+                "text_tokens": prompt_text_tokens,
+                "image_tokens": prompt_image_tokens,
+            },
+            "completion_tokens_details": {
+                "text_tokens": completion_tokens,
+                "image_tokens": 0,
+            },
         },
     }
 
@@ -130,7 +147,14 @@ def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
         response_format="b64_json",
         images=encode_images(images) or None,
     )))
-    return completion_response(model, image_result_content(result), int(result.get("created") or 0) or None)
+    response = completion_response(model, image_result_content(result), int(result.get("created") or 0) or None)
+    usage = image_usage(
+        input_text_tokens=count_text_tokens(prompt, model),
+        input_image_tokens=count_image_inputs_tokens(images, model),
+        output_tokens=count_image_output_items_tokens(result.get("data")),
+    )
+    response["usage"] = chat_usage_from_image_usage(usage)
+    return response
 
 
 def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:

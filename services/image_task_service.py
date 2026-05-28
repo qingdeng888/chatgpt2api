@@ -74,6 +74,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     }
     if task.get("data") is not None:
         item["data"] = task.get("data")
+    if task.get("usage") is not None:
+        item["usage"] = task.get("usage")
     if task.get("error"):
         item["error"] = task.get("error")
     return item
@@ -242,7 +244,8 @@ class ImageTaskService:
                 else:
                     message = "号池中没有可用账号或所有账号均被限流，请检查号池状态（账号额度、是否被封禁、是否到达生图上限）"
                 raise RuntimeError(message)
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            usage = result.get("usage")
+            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, usage=usage, error="")
             self._log_call(
                 identity,
                 mode,
@@ -347,6 +350,9 @@ class ImageTaskService:
             data = item.get("data")
             if isinstance(data, list):
                 task["data"] = data
+            usage = item.get("usage")
+            if isinstance(usage, dict):
+                task["usage"] = usage
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
