@@ -302,10 +302,12 @@ def token_usage(
         "input_tokens_details": {
             "text_tokens": max(0, int(input_text_tokens or 0)),
             "image_tokens": max(0, int(input_image_tokens or 0)),
+            "cached_tokens": 0,
         },
         "output_tokens_details": {
             "text_tokens": max(0, int(output_text_tokens or 0)),
             "image_tokens": max(0, int(output_image_tokens or 0)),
+            "reasoning_tokens": 0,
         },
     }
 
@@ -334,9 +336,11 @@ def chat_usage_from_image_usage(usage: dict[str, Any]) -> dict[str, Any]:
         "prompt_tokens_details": {
             "text_tokens": int(input_details.get("text_tokens") or 0),
             "image_tokens": int(input_details.get("image_tokens") or 0),
+            "cached_tokens": int(input_details.get("cached_tokens") or 0),
         },
         "completion_tokens_details": {
             "text_tokens": int(output_details.get("text_tokens") or 0),
             "image_tokens": int(output_details.get("image_tokens") or 0),
+            "reasoning_tokens": int(output_details.get("reasoning_tokens") or 0),
         },
     }
