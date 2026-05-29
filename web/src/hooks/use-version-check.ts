@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import webConfig from "@/constants/common-env";
@@ -40,11 +40,6 @@ export function useVersionCheck() {
   const [open, setOpen] = useState(false);
   const hasNewVersion = isNewerVersion(latestVersion, currentVersion);
 
-  const checkLatestVersion = useCallback(async () => {
-    const response = await fetch(latestVersionUrl);
-    if (response.ok) setLatestVersion((await response.text()).trim() || currentVersion);
-  }, [currentVersion]);
-
   const checkLatestRelease = useCallback(
     async (showMessage = false) => {
       setChecking(true);
@@ -71,10 +66,6 @@ export function useVersionCheck() {
     },
     [currentVersion, localReleases],
   );
-
-  useEffect(() => {
-    void checkLatestVersion();
-  }, [checkLatestVersion]);
 
   const openReleaseModal = () => {
     setOpen(true);

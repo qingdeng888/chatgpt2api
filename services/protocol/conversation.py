@@ -32,12 +32,14 @@ class ImageGenerationError(Exception):
         error_type: str = "server_error",
         code: str | None = "upstream_error",
         param: str | None = None,
+        account_email: str = "",
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
         self.code = code
         self.param = param
+        self.account_email = account_email
 
     def to_openai_error(self) -> dict[str, Any]:
         return {
@@ -254,6 +256,7 @@ class ImageOutput:
     text: str = ""
     upstream_event_type: str = ""
     data: list[dict[str, Any]] = field(default_factory=list)
+    account_email: str = ""
 
     def to_chunk(self) -> dict[str, Any]:
         chunk: dict[str, Any] = {
@@ -266,6 +269,8 @@ class ImageOutput:
             "upstream_event_type": self.upstream_event_type,
             "data": [],
         }
+        if self.account_email:
+            chunk["_account_email"] = self.account_email
         if self.kind == "message":
             chunk.update({
                 "object": "image.generation.message",
@@ -646,21 +651,56 @@ def _codex_response_images(value: Any) -> list[str]:
     return []
 
 
+def _codex_response_error(value: Any) -> tuple[str, str]:
+    if not isinstance(value, dict):
+        return "", ""
+    error = value.get("error")
+    if not isinstance(error, dict):
+        response = value.get("response")
+        error = response.get("error") if isinstance(response, dict) and response.get("status") == "failed" else None
+    if not isinstance(error, dict):
+        return "", ""
+    message = str(error.get("message") or "").strip()
+    code = str(error.get("code") or error.get("type") or "server_error").strip()
+    return message or "Codex responses failed upstream.", code
+
+
 def stream_codex_image_outputs(
         backend: OpenAIBackendAPI,
         request: ConversationRequest,
         index: int = 1,
         total: int = 1,
 ) -> Iterator[ImageOutput]:
-    prompt = prompt_with_global_system(build_image_prompt(request.prompt, request.size, request.quality))
     text_parts: list[str] = []
+    event_count = 0
+    event_types: dict[str, int] = {}
     for event in backend.iter_codex_image_response_events(
-            prompt=prompt,
+            prompt=request.prompt,
             images=request.images or [],
             size=request.size,
             quality=request.quality,
     ):
         event_type = str(event.get("type") or "")
+        event_count += 1
+        event_types[event_type or "<missing>"] = event_types.get(event_type or "<missing>", 0) + 1
+        upstream_error, upstream_code = _codex_response_error(event)
+        if upstream_error:
+            logger.warning({
+                "event": "codex_response_upstream_error",
+                "model": request.model,
+                "size": request.size,
+                "quality": request.quality,
+                "event_count": event_count,
+                "event_types": event_types,
+                "upstream_code": upstream_code,
+                "upstream_error": upstream_error,
+            })
+            raise ImageGenerationError(
+                upstream_error,
+                status_code=502,
+                error_type="server_error",
+                code=upstream_code or "server_error",
+            )
         if event_type == "response.output_text.delta":
             delta = str(event.get("delta") or "")
             if delta:
@@ -676,6 +716,16 @@ def stream_codex_image_outputs(
             continue
         images = _codex_response_images(event)
         if images:
+            logger.info({
+                "event": "codex_response_image_result_found",
+                "model": request.model,
+                "size": request.size,
+                "quality": request.quality,
+                "event_count": event_count,
+                "event_types": event_types,
+                "image_count": len(images),
+                "image_result_lengths": [len(item) for item in images[:10]],
+            })
             data = format_image_result(
                 [{"b64_json": item, "revised_prompt": request.prompt} for item in images],
                 request.prompt,
@@ -697,6 +747,18 @@ def stream_codex_image_outputs(
     message = "".join(text_parts).strip()
     if message:
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+        return
+    logger.warning({
+        "event": "codex_response_no_image_result",
+        "model": request.model,
+        "size": request.size,
+        "quality": request.quality,
+        "image_input_count": len(request.images or []),
+        "event_count": event_count,
+        "event_types": event_types,
+        "output_text_len": len("".join(text_parts)),
+    })
+    raise ImageGenerationError("No image result found in response")
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
@@ -723,16 +785,21 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             emitted_for_token = False
             returned_message = False
             returned_result = False
+            account = account_service.get_account(token) or {}
+            account_email = str(account.get("email") or "").strip()
             try:
                 backend = OpenAIBackendAPI(access_token=token)
                 stream_fn = stream_codex_image_outputs if is_codex_image_model(request.model) else stream_image_outputs
                 for output in stream_fn(backend, request, index, request.n):
+                    if account_email and not output.account_email:
+                        output.account_email = account_email
                     if output.kind == "message" and request.message_as_error:
                         raise ImageGenerationError(
                             output.text or "Image generation was rejected by upstream policy.",
                             status_code=400,
                             error_type="invalid_request_error",
                             code="content_policy_violation",
+                            account_email=account_email,
                         )
                     emitted = True
                     emitted_for_token = True
@@ -744,15 +811,30 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     return
                 account_service.mark_image_result(token, True)
                 break
-            except ImagePollTimeoutError:
+            except ImagePollTimeoutError as exc:
+                if account_email and not getattr(exc, "account_email", ""):
+                    exc.account_email = account_email
                 raise
-            except ImageGenerationError:
+            except ImageGenerationError as exc:
                 account_service.mark_image_result(token, False)
+                if account_email and not getattr(exc, "account_email", ""):
+                    exc.account_email = account_email
+                logger.warning({
+                    "event": "image_stream_generation_error",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "error": str(exc),
+                })
                 raise
             except Exception as exc:
                 account_service.mark_image_result(token, False)
                 last_error = str(exc)
-                logger.warning({"event": "image_stream_fail", "request_token": token, "error": last_error})
+                logger.warning({
+                    "event": "image_stream_fail",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "error": last_error,
+                })
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     refreshed_token = account_service.refresh_access_token(token, force=True, event="image_stream")
                     if refreshed_token and refreshed_token != token:
@@ -760,7 +842,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                         continue
                     account_service.remove_invalid_token(token, "image_stream")
                     continue
-                raise ImageGenerationError(image_stream_error_message(last_error)) from exc
+                raise ImageGenerationError(image_stream_error_message(last_error), account_email=account_email) from exc
 
     if not emitted:
         if not last_error:
@@ -778,8 +860,11 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     message = ""
     progress_parts: list[str] = []
+    account_email = ""
     for output in outputs:
         created = created or output.created
+        if output.account_email and not account_email:
+            account_email = output.account_email
         if output.kind == "progress" and output.text:
             progress_parts.append(output.text)
         elif output.kind == "message":
@@ -792,4 +877,6 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
         text = message or "".join(progress_parts).strip()
         if text:
             result["message"] = text
+    if account_email:
+        result["_account_email"] = account_email
     return result
