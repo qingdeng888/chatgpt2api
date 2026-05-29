@@ -4,6 +4,8 @@ import os
 import random
 import re
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
@@ -45,11 +47,6 @@ DEFAULT_CLIENT_BUILD_NUMBER = "5955942"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 CODEX_RESPONSES_MODEL = "gpt-5.5"
-CODEX_RESPONSES_VERSION = "0.122.0"
-CODEX_RESPONSES_USER_AGENT = (
-    "codex-tui/0.122.0 (Manjaro 26.1.0-pre; x86_64) "
-    "vscode/3.0.12 (codex-tui; 0.122.0)"
-)
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -155,26 +152,6 @@ class OpenAIBackendAPI:
         if extra:
             headers.update(extra)
         return headers
-
-    @staticmethod
-    def _decode_token_payload(token: str) -> Dict[str, Any]:
-        try:
-            payload = str(token or "").split(".")[1]
-            payload += "=" * ((4 - len(payload) % 4) % 4)
-            data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    def _chatgpt_account_id(self) -> str:
-        account = account_service.get_account(self.access_token) if self.access_token else {}
-        account = account if isinstance(account, dict) else {}
-        if str(account.get("account_id") or "").strip():
-            return str(account.get("account_id") or "").strip()
-        payload = self._decode_token_payload(self.access_token)
-        auth_claim = payload.get("https://api.openai.com/auth")
-        auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
-        return str(auth_claim.get("chatgpt_account_id") or account.get("user_id") or "").strip()
 
     @staticmethod
     def _extract_quota_and_restore_at(limits_progress: list[Any]) -> tuple[int, str | None, bool]:
@@ -456,19 +433,10 @@ class OpenAIBackendAPI:
         return self._headers(path, headers)
 
     def _codex_responses_headers(self) -> Dict[str, str]:
-        headers = {
+        return {
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": CODEX_RESPONSES_USER_AGENT,
-            "version": CODEX_RESPONSES_VERSION,
-            "originator": "codex_cli_rs",
-            "session_id": self.session_id,
-            "Accept": "text/event-stream",
             "Content-Type": "application/json",
         }
-        account_id = self._chatgpt_account_id()
-        if account_id:
-            headers["chatgpt-account-id"] = account_id
-        return headers
 
     def _ensure_codex_source_account(self) -> None:
         account = account_service.get_account(self.access_token)
@@ -495,10 +463,64 @@ class OpenAIBackendAPI:
             text = str(body or "")
         return text if len(text) <= limit else text[:limit] + "...[truncated]"
 
+    @staticmethod
+    def _codex_event_image_result_lengths(value: Any) -> list[int]:
+        if isinstance(value, dict):
+            lengths: list[int] = []
+            if value.get("type") == "image_generation_call" and isinstance(value.get("result"), str):
+                lengths.append(len(value["result"]))
+            for item in value.values():
+                lengths.extend(OpenAIBackendAPI._codex_event_image_result_lengths(item))
+            return lengths
+        if isinstance(value, list):
+            lengths: list[int] = []
+            for item in value:
+                lengths.extend(OpenAIBackendAPI._codex_event_image_result_lengths(item))
+            return lengths
+        return []
+
+    @staticmethod
+    def _codex_event_summary(event: Dict[str, Any]) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "type": str(event.get("type") or ""),
+            "keys": list(event.keys())[:30],
+        }
+        for key in ("id", "status", "sequence_number", "response_id", "item_id", "output_index", "content_index"):
+            value = event.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                summary[key] = value
+        for key in ("response", "item", "output"):
+            value = event.get(key)
+            if isinstance(value, dict):
+                summary[f"{key}_type"] = value.get("type")
+                summary[f"{key}_status"] = value.get("status")
+                summary[f"{key}_keys"] = list(value.keys())[:30]
+            elif isinstance(value, list):
+                summary[f"{key}_len"] = len(value)
+                summary[f"{key}_types"] = [
+                    item.get("type") for item in value[:10] if isinstance(item, dict)
+                ]
+        error = event.get("error")
+        if isinstance(error, dict):
+            summary["error"] = {
+                key: error.get(key)
+                for key in ("type", "code", "message")
+                if error.get(key) is not None
+            }
+        delta = event.get("delta")
+        if isinstance(delta, str):
+            summary["delta_len"] = len(delta)
+            summary["delta_preview"] = delta[:200]
+        result_lengths = OpenAIBackendAPI._codex_event_image_result_lengths(event)
+        if result_lengths:
+            summary["image_result_lengths"] = result_lengths[:10]
+        return summary
+
     def _log_codex_response_failure(
             self,
             path: str,
-            response: requests.Response,
+            status_code: int,
+            headers: Any,
             payload: Dict[str, Any],
             body: Any,
     ) -> None:
@@ -506,11 +528,12 @@ class OpenAIBackendAPI:
         safe_request_headers = {
             key: value for key, value in request_headers.items() if key.lower() != "authorization"
         }
+        response_headers = dict(headers.items()) if hasattr(headers, "items") else dict(headers or {})
         tool = ((payload.get("tools") or [{}])[0]) if isinstance(payload.get("tools"), list) else {}
         logger.warning({
             "event": "codex_responses_http_error",
             "path": path,
-            "status_code": response.status_code,
+            "status_code": status_code,
             "request": {
                 "model": payload.get("model"),
                 "tool_model": tool.get("model"),
@@ -525,10 +548,68 @@ class OpenAIBackendAPI:
                 "headers": safe_request_headers,
             },
             "response": {
-                "headers": dict(response.headers or {}),
+                "headers": response_headers,
                 "body_preview": self._codex_body_preview(body),
             },
         })
+
+    @staticmethod
+    def _iter_codex_response_events(raw: Any) -> Iterator[Dict[str, Any]]:
+        content_type = str(raw.headers.get("content-type") or "").lower()
+        text = raw.read().decode("utf-8", "replace")
+        status_code = getattr(raw, "status", None)
+        parse_errors: list[str] = []
+        events: list[Dict[str, Any]] = []
+        if "application/json" in content_type:
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    events.append(data)
+            except Exception as exc:
+                parse_errors.append(str(exc))
+        else:
+            lines: list[str] = []
+            for line in text.splitlines() + [""]:
+                if not line:
+                    if lines:
+                        payload_text = "\n".join(lines).strip()
+                        if payload_text and payload_text != "[DONE]":
+                            try:
+                                data = json.loads(payload_text)
+                            except Exception as exc:
+                                parse_errors.append(str(exc))
+                                data = None
+                            if isinstance(data, dict):
+                                events.append(data)
+                        lines = []
+                elif line.startswith("data:"):
+                    lines.append(line[5:].lstrip())
+
+        event_types: Dict[str, int] = {}
+        image_result_lengths: list[int] = []
+        for event in events:
+            event_type = str(event.get("type") or "<missing>")
+            event_types[event_type] = event_types.get(event_type, 0) + 1
+            image_result_lengths.extend(OpenAIBackendAPI._codex_event_image_result_lengths(event))
+        logger.info({
+            "event": "codex_responses_response_debug",
+            "status_code": status_code,
+            "content_type": content_type,
+            "response_text_len": len(text),
+            "event_count": len(events),
+            "event_types": event_types,
+            "image_result_lengths": image_result_lengths[:10],
+            "parse_error_count": len(parse_errors),
+            "parse_errors": parse_errors[:5],
+            "event_summaries": [OpenAIBackendAPI._codex_event_summary(event) for event in events[:30]],
+            "event_previews": [
+                OpenAIBackendAPI._codex_body_preview(event, 1500)
+                for event in events[:10]
+            ] if not image_result_lengths else [],
+            "body_preview": text[:1000] if not events else "",
+        })
+        for event in events:
+            yield event
 
     def iter_codex_image_response_events(
             self,
@@ -557,41 +638,67 @@ class OpenAIBackendAPI:
             "tool_choice": {"type": "image_generation"},
             "stream": True,
         }
-        response = self.session.post(
+        request = urllib.request.Request(
             self.base_url + path,
-            headers=self._codex_responses_headers(),
-            json=payload,
-            timeout=1200,
-            stream=True,
+            json.dumps(payload).encode(),
+            self._codex_responses_headers(),
+            method="POST",
         )
+        account = account_service.get_account(self.access_token) or {}
+        token_payload = account_service._decode_jwt_payload(self.access_token)
+        auth_claim = token_payload.get("https://api.openai.com/auth")
+        auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
+        tool = payload["tools"][0]
+        logger.info({
+            "event": "codex_responses_request_debug",
+            "url": self.base_url + path,
+            "transport": "urllib.request",
+            "timeout_secs": 1200,
+            "account_email": str(account.get("email") or "").strip(),
+            "source_type": str(account.get("source_type") or "").strip(),
+            "account_type": str(account.get("type") or "").strip(),
+            "token_claims": {
+                "jti": token_payload.get("jti"),
+                "iat": token_payload.get("iat"),
+                "exp": token_payload.get("exp"),
+                "client_id": token_payload.get("client_id"),
+                "chatgpt_account_id": auth_claim.get("chatgpt_account_id"),
+                "chatgpt_plan_type": auth_claim.get("chatgpt_plan_type"),
+                "localhost": auth_claim.get("localhost"),
+            },
+            "request": {
+                "model": payload.get("model"),
+                "tool_model": tool.get("model"),
+                "tool_action": tool.get("action"),
+                "size": tool.get("size"),
+                "quality": tool.get("quality"),
+                "output_format": tool.get("output_format"),
+                "stream": payload.get("stream"),
+                "image_input_count": max(len((payload.get("input") or [{}])[0].get("content") or []) - 1, 0),
+                "prompt_preview": self._codex_body_preview(
+                    (((payload.get("input") or [{}])[0].get("content") or [{}])[0].get("text") or ""),
+                    500,
+                ),
+            },
+            "headers": {
+                key: value for key, value in self._codex_responses_headers().items()
+                if key.lower() != "authorization"
+            },
+        })
         try:
-            if not 200 <= response.status_code < 300:
-                body: Any = response.text
-                try:
-                    body = response.json()
-                except Exception:
-                    pass
-                self._log_codex_response_failure(path, response, payload, body)
-                retry_after_header = response.headers.get("Retry-After") if hasattr(response, "headers") else None
-                retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
-                raise UpstreamHTTPError(path, response.status_code, body, retry_after=retry_after)
-            content_type = str(response.headers.get("content-type") or "").lower()
-            if "application/json" in content_type:
-                data = response.json()
-                if isinstance(data, dict):
-                    yield data
-                return
-            for payload_text in iter_sse_payloads(response):
-                if payload_text == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload_text)
-                except Exception:
-                    continue
-                if isinstance(data, dict):
-                    yield data
-        finally:
-            response.close()
+            with urllib.request.urlopen(request, timeout=1200) as raw:
+                yield from self._iter_codex_response_events(raw)
+        except urllib.error.HTTPError as error:
+            body_text = error.read().decode("utf-8", "replace")
+            body: Any = body_text
+            try:
+                body = json.loads(body_text)
+            except Exception:
+                pass
+            self._log_codex_response_failure(path, error.code, error.headers, payload, body)
+            retry_after_header = error.headers.get("Retry-After") if error.headers else None
+            retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
+            raise UpstreamHTTPError(path, error.code, body, retry_after=retry_after) from error
 
     def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
         """为图片生成准备 conduit token。"""
