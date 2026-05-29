@@ -50,6 +50,13 @@ const IMAGE_QUALITY_STORAGE_KEY = "chatgpt2api:image_last_quality";
 const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
+const SUPPORTED_IMAGE_MODELS: ImageModel[] = [
+  "gpt-image-2",
+  "codex-gpt-image-2",
+  "plus-codex-gpt-image-2",
+  "team-codex-gpt-image-2",
+  "pro-codex-gpt-image-2",
+];
 
 function clampImageCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
@@ -116,6 +123,10 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
     bytes[index] = binary.charCodeAt(index);
   }
   return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
+}
+
+function normalizeStoredImageModel(value: string | null): ImageModel {
+  return SUPPORTED_IMAGE_MODELS.includes(value as ImageModel) ? (value as ImageModel) : "gpt-image-2";
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -481,7 +492,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         setImageWidth("1024");
         setImageHeight("1024");
         setImageQuality(storedQuality || "auto");
-        setImageModel(storedModel === "codex-gpt-image-2" ? "codex-gpt-image-2" : "gpt-image-2");
+        setImageModel(normalizeStoredImageModel(storedModel));
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
         const items = await listImageConversations();
