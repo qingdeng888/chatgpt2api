@@ -44,12 +44,20 @@ class ImageGenerationError(Exception):
     def to_openai_error(self) -> dict[str, Any]:
         return {
             "error": {
-                "message": str(self),
+                "message": public_image_error_message(str(self)),
                 "type": self.error_type,
                 "param": self.param,
                 "code": self.code,
             }
         }
+
+
+def public_image_error_message(message: str) -> str:
+    text = str(message or "").strip()
+    lower = text.lower()
+    if any(item in lower for item in ("backend-api/", "status=", "body=", "chatgpt.com", "upstreamhttperror")):
+        return "The image generation request failed. Please try again later."
+    return text or "The image generation request failed. Please try again later."
 
 
 def is_token_invalid_error(message: str) -> bool:
