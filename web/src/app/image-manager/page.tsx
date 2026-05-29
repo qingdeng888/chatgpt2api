@@ -381,7 +381,7 @@ function ImageManagerContent() {
               <form onSubmit={async (e) => { e.preventDefault();
                 try {
                   const r = await deleteToTarget(targetFreeMb);
-                  toast.success(`已删除 ${r.removed} 张图片，释放 ${r.freed_mb}MB`);
+                  toast.success(`已删除 ${r.removed} 张图片，释放 ${r.freed_mb ?? 0}MB`);
                   void loadStorage();
                 } catch { toast.error("清理失败"); }
               }} className="flex items-center gap-1">

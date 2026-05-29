@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import { Github } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
-import webConfig from "@/constants/common-env";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { VersionReleaseDialog } from "@/components/version-release-dialog";
 import { getValidatedAuthSession } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
@@ -121,9 +121,7 @@ export function TopNav() {
           <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 dark:bg-white/8 dark:text-stone-300 sm:inline-block sm:text-[11px]">
             {roleLabel} · {displayName}
           </span>
-          <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 dark:bg-white/8 dark:text-stone-300 sm:inline-block sm:text-[11px]">
-            v{webConfig.appVersion}
-          </span>
+          <VersionReleaseDialog />
           <button
             type="button"
             className="py-1 text-xs text-stone-400 transition hover:text-stone-700 dark:text-stone-500 dark:hover:text-stone-200 sm:text-sm"
