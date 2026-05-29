@@ -211,6 +211,7 @@ class AccountService:
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
+        normalized["proxy"] = str(normalized.get("proxy") or "").strip()
         source_type = normalized.get("source_type")
         if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
             source_type = "codex"
@@ -342,11 +343,11 @@ class AccountService:
         due_at = anchor + timedelta(seconds=self._REFRESH_TOKEN_KEEPALIVE_SECONDS)
         return due_at if due_at <= now else None
 
-    def _request_access_token_refresh(self, refresh_token: str) -> dict[str, str]:
+    def _request_access_token_refresh(self, refresh_token: str, account: dict | None = None) -> dict[str, str]:
         from curl_cffi import requests
         from services.proxy_service import proxy_settings
 
-        session = requests.Session(**proxy_settings.build_session_kwargs(impersonate="chrome", verify=True))
+        session = requests.Session(**proxy_settings.build_session_kwargs(account=account, impersonate="chrome", verify=True))
         try:
             response = session.post(
                 self._OAUTH_TOKEN_URL,
@@ -440,7 +441,7 @@ class AccountService:
             if not force and self._recent_token_refresh_error(account):
                 return active_token
             try:
-                token_data = self._request_access_token_refresh(refresh_token)
+                token_data = self._request_access_token_refresh(refresh_token, account)
             except Exception as exc:
                 self._record_token_refresh_error(active_token, event, str(exc))
                 return active_token
