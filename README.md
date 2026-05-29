@@ -122,27 +122,23 @@ environment:
 - `/v1/complete` 文本补全与流式输出已实现，但仍在测试，目前会出现对话重复的问题，请谨慎测试使用
 - 详细状态说明见：[功能清单](./docs/feature-status.en.md)
 
-## Screenshots
+## 效果展示
 
-文生图界面：
 
-![image](assets/image.png)
+<table width="100%">
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/Jj8nfwwP/image.png" alt="image" border="0"></td>
+    <td width="50%"><img src="https://i.ibb.co/pqf235v/image-edit.png" alt="image edit" border="0"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/tPcqtVfd/chery-studio.png" alt="chery studio" border="0"></td>
+    <td width="50%"><img src="https://i.ibb.co/PsT9YHBV/account-pool.png" alt="account pool" border="0"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/rRWLG08q/new-api.png" alt="new api" border="0"></td>
+  </tr>
+</table>
 
-编辑图：
-
-![image](assets/image_edit.png)
-
-Cherry Studio 中使用，支持作为绘图接口接入：
-
-![image](assets/chery_studio.png)
-
-号池管理：
-
-![image](assets/account_pool.png)
-
-New Api 接入：
-
-![image](assets/new_api.png)
 
 ## API
 
