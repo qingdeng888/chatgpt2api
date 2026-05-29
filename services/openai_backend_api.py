@@ -75,6 +75,8 @@ class OpenAIBackendAPI:
         self.client_version = DEFAULT_CLIENT_VERSION
         self.client_build_number = DEFAULT_CLIENT_BUILD_NUMBER
         self.access_token = access_token
+        self.account = account_service.get_account(self.access_token) if self.access_token else {}
+        self.account = self.account if isinstance(self.account, dict) else {}
         self.fp = self._build_fp()
         self.user_agent = self.fp["user-agent"]
         self.device_id = self.fp["oai-device-id"]
@@ -82,6 +84,7 @@ class OpenAIBackendAPI:
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ""
         self.session = requests.Session(**proxy_settings.build_session_kwargs(
+            account=self.account,
             impersonate=self.fp["impersonate"],
             verify=True,
         ))
@@ -115,8 +118,7 @@ class OpenAIBackendAPI:
             self.session.headers["Authorization"] = f"Bearer {self.access_token}"
 
     def _build_fp(self) -> Dict[str, str]:
-        account = account_service.get_account(self.access_token) if self.access_token else {}
-        account = account if isinstance(account, dict) else {}
+        account = self.account
         raw_fp = account.get("fp")
         fp = {str(k).lower(): str(v) for k, v in raw_fp.items()} if isinstance(raw_fp, dict) else {}
         for key in (

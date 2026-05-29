@@ -35,6 +35,7 @@ export type Account = {
   success: number;
   fail: number;
   last_used_at?: string | null;
+  proxy?: string | null;
 };
 
 export type AccountImportPayload = {
@@ -344,6 +345,7 @@ export async function updateAccount(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    proxy?: string;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {

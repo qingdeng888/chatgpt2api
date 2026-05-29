@@ -11,6 +11,7 @@ import {
   CircleOff,
   Copy,
   Download,
+  Link2,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -45,6 +46,7 @@ import {
   fetchAccounts,
   fetchModels,
   refreshAccounts,
+  testProxy,
   updateAccount,
   type Account,
   type AccountStatus,
@@ -189,6 +191,8 @@ function AccountsPageContent() {
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
+  const [editProxy, setEditProxy] = useState("");
+  const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -345,6 +349,26 @@ function AccountsPageContent() {
   const openEditDialog = (account: Account) => {
     setEditingAccount(account);
     setEditStatus(account.status);
+    setEditProxy(account.proxy ?? "");
+  };
+
+  const handleTestAccountProxy = async () => {
+    const candidate = editProxy.trim();
+    if (!candidate) {
+      toast.error("请先填写代理地址");
+      return;
+    }
+    setIsTestingProxy(true);
+    try {
+      const data = await testProxy(candidate);
+      data.result.ok
+        ? toast.success(`代理可用（${data.result.latency_ms} ms，HTTP ${data.result.status}）`)
+        : toast.error(`代理不可用：${data.result.error ?? "未知错误"}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "测试代理失败");
+    } finally {
+      setIsTestingProxy(false);
+    }
   };
 
   const handleUpdateAccount = async () => {
@@ -356,6 +380,7 @@ function AccountsPageContent() {
     try {
       const data = await updateAccount(editingAccount.access_token, {
         status: editStatus,
+        proxy: editProxy.trim(),
       });
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -431,7 +456,7 @@ function AccountsPageContent() {
           <DialogHeader className="gap-2">
             <DialogTitle>编辑账户</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              手动修改账号状态。
+              手动修改账号状态和专属代理。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -451,6 +476,26 @@ function AccountsPageContent() {
                     ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">账号代理</label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={editProxy}
+                  onChange={(event) => setEditProxy(event.target.value)}
+                  placeholder="留空走全局代理，例如 http://127.0.0.1:7890"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl border-stone-200 bg-white px-4 text-stone-700 sm:w-24"
+                  onClick={() => void handleTestAccountProxy()}
+                  disabled={isTestingProxy}
+                >
+                  {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+                  测试
+                </Button>
+              </div>
             </div>
           </div>
           <DialogFooter className="pt-2">
