@@ -166,7 +166,9 @@ def _request_excerpt(text: object, limit: int = 1000) -> str:
 
 
 def _image_error_response(exc: Exception) -> JSONResponse:
-    message = str(exc)
+    from services.protocol.conversation import public_image_error_message
+
+    message = public_image_error_message(str(exc))
     if "no available image quota" in message.lower():
         return openai_error_response(
             {
@@ -220,6 +222,8 @@ class LoggedCall:
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
+            if self.endpoint.startswith("/v1/images"):
+                return _image_error_response(exc)
             return _protocol_error_response(exc, 502, sse)
 
         if isinstance(result, dict):
@@ -239,6 +243,8 @@ class LoggedCall:
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
+            if self.endpoint.startswith("/v1/images"):
+                return _image_error_response(exc)
             return _protocol_error_response(exc, 502, sse)
         if not has_first:
             self.log("流式调用结束")
@@ -263,6 +269,10 @@ class LoggedCall:
                 urls=urls,
                 account_email=(account_emails[0] if account_emails else getattr(exc, "account_email", "")),
             )
+            if self.endpoint.startswith("/v1/images") and not hasattr(exc, "to_openai_error"):
+                from services.protocol.conversation import ImageGenerationError, public_image_error_message
+
+                raise ImageGenerationError(public_image_error_message(str(exc))) from exc
             raise
         finally:
             if not failed:
