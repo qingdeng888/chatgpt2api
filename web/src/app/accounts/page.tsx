@@ -43,10 +43,12 @@ import {
 import {
   deleteAccounts,
   fetchAccounts,
+  fetchModels,
   refreshAccounts,
   updateAccount,
   type Account,
   type AccountStatus,
+  type Model,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
@@ -164,9 +166,21 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
+function displayAccountSource(account: Account) {
+  const source = String(account.source_type || "").trim().toLowerCase();
+  if (!source) {
+    return "web";
+  }
+  if (source === "web") {
+    return "web";
+  }
+  return source;
+}
+
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -176,6 +190,7 @@ function AccountsPageContent() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -198,12 +213,26 @@ function AccountsPageContent() {
     }
   };
 
+  const loadModels = async () => {
+    setIsLoadingModels(true);
+    try {
+      const data = await fetchModels();
+      setAvailableModels(Array.isArray(data.data) ? data.data : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "加载模型列表失败";
+      toast.error(message);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
   useEffect(() => {
     if (didLoadRef.current) {
       return;
     }
     didLoadRef.current = true;
     void loadAccounts();
+    void loadModels();
   }, []);
 
   const filteredAccounts = useMemo(() => {
@@ -467,6 +496,42 @@ function AccountsPageContent() {
             );
           })}
         </div>
+        <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+          <CardContent className="p-4">
+            <div className="mb-3 text-sm font-medium text-stone-700">
+              系统可用模型
+              <span className="ml-1 text-stone-400">({availableModels.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {availableModels.length > 0 ? (
+                availableModels.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className="inline-flex cursor-pointer items-center rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-700 transition hover:border-stone-300 hover:bg-stone-50"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(model.id);
+                      toast.success("模型名已复制");
+                    }}
+                    title={`点击复制 ${model.id}`}
+                  >
+                    <img
+                      src="/openai.svg"
+                      alt=""
+                      aria-hidden="true"
+                      className="mr-1.5 size-3.5 shrink-0"
+                    />
+                    {model.id}
+                  </button>
+                ))
+              ) : isLoadingModels ? (
+                <span className="text-sm text-stone-400">正在加载模型列表...</span>
+              ) : (
+                <span className="text-sm text-stone-400">当前暂无可用模型</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="space-y-4">
@@ -589,7 +654,7 @@ function AccountsPageContent() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left">
+              <table className="w-full min-w-[1000px] text-left">
                 <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3">
@@ -600,6 +665,7 @@ function AccountsPageContent() {
                     </th>
                     <th className="w-56 px-4 py-3">token</th>
                     <th className="w-28 px-4 py-3">类型</th>
+                    <th className="w-24 px-4 py-3">来源</th>
                     <th className="w-24 px-4 py-3">状态</th>
                     <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-32 px-4 py-3">创建时间</th>
@@ -652,6 +718,11 @@ function AccountsPageContent() {
                         <td className="px-4 py-3">
                           <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
                             {displayAccountType(account)}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant="outline" className="rounded-md border-stone-200 text-stone-600">
+                            {displayAccountSource(account)}
                           </Badge>
                         </td>
                         <td className="px-4 py-3">

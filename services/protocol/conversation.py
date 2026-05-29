@@ -13,7 +13,7 @@ from services.account_service import account_service
 from services.config import config
 from services.image_storage_service import image_storage_service
 from services.openai_backend_api import ImagePollTimeoutError, OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS, extract_image_from_message_content
+from utils.helper import IMAGE_MODELS, extract_image_from_message_content, is_supported_image_model, split_image_model
 from utils.image_tokens import count_image_content_tokens
 from utils.log import logger
 
@@ -488,7 +488,7 @@ def conversation_events(
     quality: str = "auto",
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
-    image_model = str(model or "").strip() in IMAGE_MODELS
+    image_model = is_supported_image_model(model)
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
     final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, quality)) if image_model else prompt
@@ -623,15 +623,16 @@ def stream_image_outputs(
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
-    if str(request.model or "").strip() not in IMAGE_MODELS:
-        raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(IMAGE_MODELS))
+    if not is_supported_image_model(request.model):
+        raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(sorted(IMAGE_MODELS)))
 
     emitted = False
     last_error = ""
     for index in range(1, request.n + 1):
         while True:
             try:
-                token = account_service.get_available_access_token()
+                plan_type, _ = split_image_model(request.model)
+                token = account_service.get_available_access_token(plan_type=plan_type)
             except RuntimeError as exc:
                 if emitted:
                     return

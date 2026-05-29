@@ -2,7 +2,12 @@ import { httpRequest, request } from "@/lib/request";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
-export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
+export type ImageModel =
+  | "gpt-image-2"
+  | "codex-gpt-image-2"
+  | "plus-codex-gpt-image-2"
+  | "team-codex-gpt-image-2"
+  | "pro-codex-gpt-image-2";
 export type AuthRole = "admin" | "user";
 export type ImageStorageMode = "local" | "webdav" | "both";
 
@@ -19,6 +24,7 @@ export type ImageStorageSettings = {
 export type Account = {
   access_token: string;
   type: AccountType;
+  source_type?: string | null;
   status: AccountStatus;
   quota: number;
   image_quota_unknown?: boolean;
@@ -36,8 +42,23 @@ export type Account = {
   last_used_at?: string | null;
 };
 
+export type Model = {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+  permission: unknown[];
+  root: string;
+  parent: string | null;
+};
+
 type AccountListResponse = {
   items: Account[];
+};
+
+type ModelListResponse = {
+  object: string;
+  data: Model[];
 };
 
 type AccountMutationResponse = {
@@ -265,6 +286,10 @@ export async function login(authKey: string) {
 
 export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
+}
+
+export async function fetchModels() {
+  return httpRequest<ModelListResponse>("/v1/models");
 }
 
 export async function createAccounts(tokens: string[]) {

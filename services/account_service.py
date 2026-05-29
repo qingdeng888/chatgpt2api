@@ -126,6 +126,16 @@ class AccountService:
             return True
         return int(account.get("quota") or 0) > 0
 
+    @classmethod
+    def _account_matches_plan_type(cls, account: dict, plan_type: str | None = None) -> bool:
+        if not plan_type:
+            return True
+        normalized_plan = cls._normalize_account_type(plan_type)
+        normalized_account = cls._normalize_account_type(account.get("type"))
+        if not normalized_plan or not normalized_account:
+            return False
+        return normalized_plan.lower() == normalized_account.lower()
+
     @staticmethod
     def _normalize_account_type(value: object) -> str | None:
         raw = str(value or "").strip()
@@ -460,30 +470,45 @@ class AccountService:
         with self._lock:
             return list(self._accounts)
 
-    def _list_ready_candidate_tokens(self, excluded_tokens: set[str] | None = None) -> list[str]:
+    def _list_ready_candidate_tokens(
+            self,
+            excluded_tokens: set[str] | None = None,
+            plan_type: str | None = None,
+    ) -> list[str]:
         excluded = set(excluded_tokens or set())
         return [
             token
             for item in self._accounts.values()
             if self._is_image_account_available(item)
+               and self._account_matches_plan_type(item, plan_type)
                and (token := item.get("access_token") or "")
                and token not in excluded
         ]
 
-    def _list_available_candidate_tokens(self, excluded_tokens: set[str] | None = None) -> list[str]:
+    def _list_available_candidate_tokens(
+            self,
+            excluded_tokens: set[str] | None = None,
+            plan_type: str | None = None,
+    ) -> list[str]:
         max_concurrency = max(1, int(config.image_account_concurrency or 1))
         return [
             token
-            for token in self._list_ready_candidate_tokens(excluded_tokens)
+            for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type)
             if int(self._image_inflight.get(token, 0)) < max_concurrency
         ]
 
-    def _acquire_next_candidate_token(self, excluded_tokens: set[str] | None = None) -> str:
+    def _acquire_next_candidate_token(
+            self,
+            excluded_tokens: set[str] | None = None,
+            plan_type: str | None = None,
+    ) -> str:
         with self._image_slot_condition:
             while True:
-                if not self._list_ready_candidate_tokens(excluded_tokens):
-                    raise RuntimeError("no available image quota")
-                tokens = self._list_available_candidate_tokens(excluded_tokens)
+                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type):
+                    raise RuntimeError(
+                        f"no available {plan_type} image quota" if plan_type else "no available image quota"
+                    )
+                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type)
                 if tokens:
                     access_token = tokens[self._index % len(tokens)]
                     self._index += 1
@@ -503,10 +528,13 @@ class AccountService:
                 self._image_inflight[access_token] = current_inflight - 1
             self._image_slot_condition.notify_all()
 
-    def get_available_access_token(self) -> str:
+    def get_available_access_token(self, plan_type: str | None = None) -> str:
         attempted_tokens: set[str] = set()
         while True:
-            access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens)
+            access_token = self._acquire_next_candidate_token(
+                excluded_tokens=attempted_tokens,
+                plan_type=plan_type,
+            )
             attempted_tokens.add(access_token)
             try:
                 account = self.fetch_remote_info(access_token, "get_available_access_token")

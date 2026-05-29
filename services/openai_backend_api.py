@@ -15,7 +15,7 @@ from PIL import Image
 from services.account_service import account_service
 from services.config import config
 from services.proxy_service import proxy_settings
-from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid
+from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from utils.turnstile import solve_turnstile_token
@@ -399,13 +399,13 @@ class OpenAIBackendAPI:
 
     def _image_model_slug(self, model: str) -> str:
         """把标准图片模型名映射到底层 model slug。"""
-        model = str(model or "").strip()
-        if not model:
+        _, base_model = split_image_model(model)
+        if not base_model:
             return "auto"
-        if model == "gpt-image-2":
+        if base_model == "gpt-image-2":
             return "gpt-5-3"
-        if model == CODEX_IMAGE_MODEL:
-            return model
+        if base_model == CODEX_IMAGE_MODEL:
+            return base_model
         return "auto"
 
     def _image_headers(self, path: str, requirements: ChatRequirements, conduit_token: str = "", accept: str = "*/*") -> \
