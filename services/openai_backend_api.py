@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import random
 import re
@@ -43,6 +44,16 @@ DEFAULT_CLIENT_VERSION = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 DEFAULT_CLIENT_BUILD_NUMBER = "5955942"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
+CODEX_RESPONSES_MODEL = "gpt-5.5"
+CODEX_RESPONSES_VERSION = "0.122.0"
+CODEX_RESPONSES_USER_AGENT = (
+    "codex-tui/0.122.0 (Manjaro 26.1.0-pre; x86_64) "
+    "vscode/3.0.12 (codex-tui; 0.122.0)"
+)
+CODEX_RESPONSES_INSTRUCTIONS = (
+    "Use the image_generation tool to create exactly one image for the user's request. "
+    "Return the generated image result."
+)
 
 
 class OpenAIBackendAPI:
@@ -144,6 +155,26 @@ class OpenAIBackendAPI:
         if extra:
             headers.update(extra)
         return headers
+
+    @staticmethod
+    def _decode_token_payload(token: str) -> Dict[str, Any]:
+        try:
+            payload = str(token or "").split(".")[1]
+            payload += "=" * ((4 - len(payload) % 4) % 4)
+            data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _chatgpt_account_id(self) -> str:
+        account = account_service.get_account(self.access_token) if self.access_token else {}
+        account = account if isinstance(account, dict) else {}
+        if str(account.get("account_id") or "").strip():
+            return str(account.get("account_id") or "").strip()
+        payload = self._decode_token_payload(self.access_token)
+        auth_claim = payload.get("https://api.openai.com/auth")
+        auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
+        return str(auth_claim.get("chatgpt_account_id") or account.get("user_id") or "").strip()
 
     @staticmethod
     def _extract_quota_and_restore_at(limits_progress: list[Any]) -> tuple[int, str | None, bool]:
@@ -423,6 +454,144 @@ class OpenAIBackendAPI:
         if accept == "text/event-stream":
             headers["X-Oai-Turn-Trace-Id"] = new_uuid()
         return self._headers(path, headers)
+
+    def _codex_responses_headers(self) -> Dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "User-Agent": CODEX_RESPONSES_USER_AGENT,
+            "version": CODEX_RESPONSES_VERSION,
+            "originator": "codex_cli_rs",
+            "session_id": self.session_id,
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        account_id = self._chatgpt_account_id()
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
+        return headers
+
+    def _ensure_codex_source_account(self) -> None:
+        account = account_service.get_account(self.access_token)
+        source_type = str((account or {}).get("source_type") or "web").strip().lower()
+        if source_type != "codex":
+            raise RuntimeError("codex responses endpoint requires a codex source account")
+
+    @staticmethod
+    def _codex_image_input(prompt: str, images: list[str]) -> list[Dict[str, Any]]:
+        content: list[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        for image in images:
+            payload = image if image.startswith("data:image/") else f"data:image/png;base64,{image}"
+            content.append({"type": "input_image", "image_url": payload})
+        return [{"role": "user", "content": content}]
+
+    @staticmethod
+    def _codex_body_preview(body: Any, limit: int = 4000) -> str:
+        if isinstance(body, (dict, list)):
+            try:
+                text = json.dumps(body, ensure_ascii=False)
+            except Exception:
+                text = repr(body)
+        else:
+            text = str(body or "")
+        return text if len(text) <= limit else text[:limit] + "...[truncated]"
+
+    def _log_codex_response_failure(
+            self,
+            path: str,
+            response: requests.Response,
+            payload: Dict[str, Any],
+            body: Any,
+    ) -> None:
+        request_headers = self._codex_responses_headers()
+        safe_request_headers = {
+            key: value for key, value in request_headers.items() if key.lower() != "authorization"
+        }
+        tool = ((payload.get("tools") or [{}])[0]) if isinstance(payload.get("tools"), list) else {}
+        logger.warning({
+            "event": "codex_responses_http_error",
+            "path": path,
+            "status_code": response.status_code,
+            "request": {
+                "model": payload.get("model"),
+                "tool_model": tool.get("model"),
+                "tool_action": tool.get("action"),
+                "size": tool.get("size"),
+                "quality": tool.get("quality"),
+                "image_input_count": max(len((payload.get("input") or [{}])[0].get("content") or []) - 1, 0),
+                "prompt_preview": self._codex_body_preview(
+                    (((payload.get("input") or [{}])[0].get("content") or [{}])[0].get("text") or ""),
+                    500,
+                ),
+                "headers": safe_request_headers,
+            },
+            "response": {
+                "headers": dict(response.headers or {}),
+                "body_preview": self._codex_body_preview(body),
+            },
+        })
+
+    def iter_codex_image_response_events(
+            self,
+            prompt: str,
+            images: list[str] | None = None,
+            size: str | None = None,
+            quality: str = "auto",
+    ) -> Iterator[Dict[str, Any]]:
+        if not self.access_token:
+            raise RuntimeError("access_token is required for codex image endpoints")
+        self._ensure_codex_source_account()
+        path = "/backend-api/codex/responses"
+        payload = {
+            "model": CODEX_RESPONSES_MODEL,
+            "instructions": CODEX_RESPONSES_INSTRUCTIONS,
+            "store": False,
+            "input": self._codex_image_input(prompt, images or []),
+            "tools": [{
+                "type": "image_generation",
+                "model": "gpt-image-2",
+                "action": "edit" if images else "generate",
+                "size": str(size or "1024x1024"),
+                "quality": str(quality or "auto"),
+                "output_format": "png",
+            }],
+            "tool_choice": {"type": "image_generation"},
+            "stream": True,
+        }
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._codex_responses_headers(),
+            json=payload,
+            timeout=1200,
+            stream=True,
+        )
+        try:
+            if not 200 <= response.status_code < 300:
+                body: Any = response.text
+                try:
+                    body = response.json()
+                except Exception:
+                    pass
+                self._log_codex_response_failure(path, response, payload, body)
+                retry_after_header = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+                retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
+                raise UpstreamHTTPError(path, response.status_code, body, retry_after=retry_after)
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if "application/json" in content_type:
+                data = response.json()
+                if isinstance(data, dict):
+                    yield data
+                return
+            for payload_text in iter_sse_payloads(response):
+                if payload_text == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload_text)
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    yield data
+        finally:
+            response.close()
 
     def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
         """为图片生成准备 conduit token。"""

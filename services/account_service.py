@@ -136,6 +136,28 @@ class AccountService:
             return False
         return normalized_plan.lower() == normalized_account.lower()
 
+    @classmethod
+    def _account_matches_source_type(cls, account: dict, source_type: str | None = None) -> bool:
+        if not source_type:
+            return True
+        return cls._normalize_source_type(account.get("source_type")) == cls._normalize_source_type(source_type)
+
+    @classmethod
+    def _account_matches_any_plan_type(cls, account: dict, plan_types: set[str] | tuple[str, ...] | None = None) -> bool:
+        if not plan_types:
+            return True
+        normalized_account = cls._normalize_account_type(account.get("type"))
+        normalized_plans = {
+            normalized
+            for plan_type in plan_types
+            if (normalized := cls._normalize_account_type(plan_type))
+        }
+        return bool(normalized_account and normalized_account in normalized_plans)
+
+    @staticmethod
+    def _normalize_source_type(value: object) -> str:
+        return str(value or "web").strip().lower() or "web"
+
     @staticmethod
     def _normalize_account_type(value: object) -> str | None:
         raw = str(value or "").strip()
@@ -180,13 +202,19 @@ class AccountService:
         normalized = dict(item)
         normalized.pop("accessToken", None)
         normalized["access_token"] = access_token
+        if str(normalized.get("type") or "").strip().lower() == "codex":
+            normalized["export_type"] = "codex"
+            normalized.pop("type", None)
         normalized["type"] = normalized.get("type") or "free"
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
-        normalized["source_type"] = str(normalized.get("source_type") or "web").strip() or "web"
+        source_type = normalized.get("source_type")
+        if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
+            source_type = "codex"
+        normalized["source_type"] = self._normalize_source_type(source_type)
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
@@ -474,6 +502,8 @@ class AccountService:
             self,
             excluded_tokens: set[str] | None = None,
             plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
         excluded = set(excluded_tokens or set())
         return [
@@ -481,6 +511,8 @@ class AccountService:
             for item in self._accounts.values()
             if self._is_image_account_available(item)
                and self._account_matches_plan_type(item, plan_type)
+               and self._account_matches_any_plan_type(item, plan_types)
+               and self._account_matches_source_type(item, source_type)
                and (token := item.get("access_token") or "")
                and token not in excluded
         ]
@@ -489,11 +521,13 @@ class AccountService:
             self,
             excluded_tokens: set[str] | None = None,
             plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
         max_concurrency = max(1, int(config.image_account_concurrency or 1))
         return [
             token
-            for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type)
+            for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
             if int(self._image_inflight.get(token, 0)) < max_concurrency
         ]
 
@@ -501,14 +535,17 @@ class AccountService:
             self,
             excluded_tokens: set[str] | None = None,
             plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> str:
         with self._image_slot_condition:
             while True:
-                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type):
+                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
                     raise RuntimeError(
-                        f"no available {plan_type} image quota" if plan_type else "no available image quota"
+                        f"no available {plan_type or source_type or ''} image quota".replace("  ", " ").strip()
+                        if plan_type or source_type else "no available image quota"
                     )
-                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type)
+                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
                 if tokens:
                     access_token = tokens[self._index % len(tokens)]
                     self._index += 1
@@ -528,12 +565,19 @@ class AccountService:
                 self._image_inflight[access_token] = current_inflight - 1
             self._image_slot_condition.notify_all()
 
-    def get_available_access_token(self, plan_type: str | None = None) -> str:
+    def get_available_access_token(
+            self,
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
+    ) -> str:
         attempted_tokens: set[str] = set()
         while True:
             access_token = self._acquire_next_candidate_token(
                 excluded_tokens=attempted_tokens,
                 plan_type=plan_type,
+                source_type=source_type,
+                plan_types=plan_types,
             )
             attempted_tokens.add(access_token)
             try:
@@ -541,7 +585,12 @@ class AccountService:
             except Exception:
                 self.release_image_slot(access_token)
                 continue
-            if self._is_image_account_available(account or {}):
+            if (
+                    self._is_image_account_available(account or {})
+                    and self._account_matches_plan_type(account or {}, plan_type)
+                    and self._account_matches_any_plan_type(account or {}, plan_types)
+                    and self._account_matches_source_type(account or {}, source_type)
+            ):
                 return str((account or {}).get("access_token") or access_token)
             self.release_image_slot(access_token)
 
@@ -627,7 +676,10 @@ class AccountService:
         # CPA/Codex 导出文件里的 `type=codex` 是导出格式，不是号池套餐类型。
         if str(payload.get("type") or "").strip().lower() == "codex":
             payload["export_type"] = "codex"
+            payload["source_type"] = "codex"
             payload.pop("type", None)
+        if str(payload.get("export_type") or "").strip().lower() == "codex":
+            payload["source_type"] = "codex"
         if payload.get("plan_type") and not payload.get("type"):
             payload["type"] = str(payload.get("plan_type") or "").strip()
         return payload
@@ -640,11 +692,14 @@ class AccountService:
         ]
         return self._add_account_payloads(payloads)
 
-    def add_accounts(self, tokens: list[str]) -> dict:
+    def add_accounts(self, tokens: list[str], source_type: str = "web") -> dict:
         tokens = list(dict.fromkeys(token for token in tokens if token))
         if not tokens:
             return {"added": 0, "skipped": 0, "items": self.list_accounts()}
-        return self._add_account_payloads([{"access_token": token, "source_type": "web"} for token in tokens])
+        return self._add_account_payloads([
+            {"access_token": token, "source_type": self._normalize_source_type(source_type)}
+            for token in tokens
+        ])
 
     def _add_account_payloads(self, payloads: list[dict]) -> dict:
         deduped: dict[str, dict] = {}

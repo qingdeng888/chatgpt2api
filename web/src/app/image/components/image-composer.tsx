@@ -19,6 +19,7 @@ type ImageComposerProps = {
   imageHeight: string;
   imageQuality: string;
   imageModel: ImageModel;
+  imageModels: ImageModel[];
   availableQuota: string;
   activeTaskCount: number;
   referenceImages: Array<{ name: string; dataUrl: string }>;
@@ -62,14 +63,6 @@ const qualityOptions = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
 ];
-const modelOptions: Array<{ value: ImageModel; label: string }> = [
-  { value: "gpt-image-2", label: "gpt-image-2" },
-  { value: "codex-gpt-image-2", label: "codex-gpt-image-2" },
-  { value: "plus-codex-gpt-image-2", label: "plus-codex-gpt-image-2" },
-  { value: "team-codex-gpt-image-2", label: "team-codex-gpt-image-2" },
-  { value: "pro-codex-gpt-image-2", label: "pro-codex-gpt-image-2" },
-];
-
 const aspectOptions = [
   { ratio: "1:1", tier: "1k", width: "1024", height: "1024", label: "1:1", icon: Square },
   { ratio: "2:3", tier: "1k", width: "1024", height: "1536", label: "2:3", icon: RectangleVertical },
@@ -96,6 +89,7 @@ export function ImageComposer({
   imageHeight,
   imageQuality,
   imageModel,
+  imageModels,
   availableQuota,
   activeTaskCount,
   referenceImages,
@@ -125,10 +119,15 @@ export function ImageComposer({
     () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
     [referenceImages],
   );
+  const modelOptions = useMemo(
+    () => imageModels.map((model) => ({ value: model, label: model })),
+    [imageModels],
+  );
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
   const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
   const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
+  const isCodexModel = imageModel.toLowerCase().includes("codex");
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -453,15 +452,21 @@ export function ImageComposer({
                             {aspectOptions.map((option) => {
                               const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
                               const Icon = option.icon;
+                              const disabled = !isCodexModel && (option.tier === "2k" || option.tier === "4k");
                               return (
                                 <button
                                   key={`${option.ratio}-${option.tier}-${option.label}`}
                                   type="button"
+                                  disabled={disabled}
                                   className={cn(
                                     "flex h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
                                     active && "border-stone-950",
+                                    disabled && "cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 hover:border-stone-100 hover:bg-stone-50",
                                   )}
                                   onClick={() => {
+                                    if (disabled) {
+                                      return;
+                                    }
                                     onImageRatioChange(option.ratio);
                                     onImageTierChange(option.tier);
                                     onImageWidthChange(option.width);

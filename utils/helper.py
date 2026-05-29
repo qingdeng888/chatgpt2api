@@ -122,6 +122,11 @@ def is_supported_image_model(model: object) -> bool:
     return base_model is not None
 
 
+def is_codex_image_model(model: object) -> bool:
+    _, base_model = split_image_model(model)
+    return base_model == CODEX_IMAGE_MODEL
+
+
 def is_image_chat_request(body: dict[str, object]) -> bool:
     model = str(body.get("model") or "").strip()
     modalities = body.get("modalities")
