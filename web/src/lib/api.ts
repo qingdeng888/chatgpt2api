@@ -2,12 +2,7 @@ import { httpRequest, request } from "@/lib/request";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
-export type ImageModel =
-  | "gpt-image-2"
-  | "codex-gpt-image-2"
-  | "plus-codex-gpt-image-2"
-  | "team-codex-gpt-image-2"
-  | "pro-codex-gpt-image-2";
+export type ImageModel = string;
 export type AuthRole = "admin" | "user";
 export type ImageStorageMode = "local" | "webdav" | "both";
 
@@ -40,6 +35,15 @@ export type Account = {
   success: number;
   fail: number;
   last_used_at?: string | null;
+};
+
+export type AccountImportPayload = {
+  access_token: string;
+  accessToken?: string;
+  type?: string;
+  export_type?: string;
+  source_type?: string;
+  [key: string]: unknown;
 };
 
 export type Model = {
@@ -292,10 +296,10 @@ export async function fetchModels() {
   return httpRequest<ModelListResponse>("/v1/models");
 }
 
-export async function createAccounts(tokens: string[]) {
+export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
-    body: { tokens },
+    body: { tokens, accounts },
   });
 }
 

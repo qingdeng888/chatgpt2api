@@ -71,6 +71,7 @@ function getCpaAccount(value: unknown): AccountImportPayload | null {
   const payload: AccountImportPayload = {
     ...raw,
     access_token: token,
+    source_type: "codex",
   };
   delete payload.accessToken;
   if (payload.type === "codex") {

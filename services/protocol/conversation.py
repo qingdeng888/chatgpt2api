@@ -13,7 +13,13 @@ from services.account_service import account_service
 from services.config import config
 from services.image_storage_service import image_storage_service
 from services.openai_backend_api import ImagePollTimeoutError, OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS, extract_image_from_message_content, is_supported_image_model, split_image_model
+from utils.helper import (
+    IMAGE_MODELS,
+    extract_image_from_message_content,
+    is_codex_image_model,
+    is_supported_image_model,
+    split_image_model,
+)
 from utils.image_tokens import count_image_content_tokens
 from utils.log import logger
 
@@ -622,6 +628,77 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
 
 
+def _codex_response_images(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        if value.get("type") == "image_generation_call" and isinstance(value.get("result"), str):
+            result = value["result"].strip()
+            if result:
+                return [result.split(",", 1)[1] if result.startswith("data:image/") else result]
+        images: list[str] = []
+        for item in value.values():
+            images.extend(_codex_response_images(item))
+        return images
+    if isinstance(value, list):
+        images: list[str] = []
+        for item in value:
+            images.extend(_codex_response_images(item))
+        return images
+    return []
+
+
+def stream_codex_image_outputs(
+        backend: OpenAIBackendAPI,
+        request: ConversationRequest,
+        index: int = 1,
+        total: int = 1,
+) -> Iterator[ImageOutput]:
+    prompt = prompt_with_global_system(build_image_prompt(request.prompt, request.size, request.quality))
+    text_parts: list[str] = []
+    for event in backend.iter_codex_image_response_events(
+            prompt=prompt,
+            images=request.images or [],
+            size=request.size,
+            quality=request.quality,
+    ):
+        event_type = str(event.get("type") or "")
+        if event_type == "response.output_text.delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                text_parts.append(delta)
+                yield ImageOutput(
+                    kind="progress",
+                    model=request.model,
+                    index=index,
+                    total=total,
+                    text=delta,
+                    upstream_event_type=event_type,
+                )
+            continue
+        images = _codex_response_images(event)
+        if images:
+            data = format_image_result(
+                [{"b64_json": item, "revised_prompt": request.prompt} for item in images],
+                request.prompt,
+                request.response_format,
+                request.base_url,
+                int(time.time()),
+            )["data"]
+            if data:
+                yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
+                return
+        if event_type:
+            yield ImageOutput(
+                kind="progress",
+                model=request.model,
+                index=index,
+                total=total,
+                upstream_event_type=event_type,
+            )
+    message = "".join(text_parts).strip()
+    if message:
+        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+
+
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
     if not is_supported_image_model(request.model):
         raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(sorted(IMAGE_MODELS)))
@@ -632,7 +709,12 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
         while True:
             try:
                 plan_type, _ = split_image_model(request.model)
-                token = account_service.get_available_access_token(plan_type=plan_type)
+                codex_model = is_codex_image_model(request.model)
+                token = account_service.get_available_access_token(
+                    plan_type=plan_type,
+                    source_type="codex" if codex_model else None,
+                    plan_types=("plus", "team", "pro") if codex_model and not plan_type else None,
+                )
             except RuntimeError as exc:
                 if emitted:
                     return
@@ -643,7 +725,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             returned_result = False
             try:
                 backend = OpenAIBackendAPI(access_token=token)
-                for output in stream_image_outputs(backend, request, index, request.n):
+                stream_fn = stream_codex_image_outputs if is_codex_image_model(request.model) else stream_image_outputs
+                for output in stream_fn(backend, request, index, request.n):
                     if output.kind == "message" and request.message_as_error:
                         raise ImageGenerationError(
                             output.text or "Image generation was rejected by upstream policy.",

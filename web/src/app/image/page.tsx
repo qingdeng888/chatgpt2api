@@ -21,9 +21,11 @@ import {
   createImageEditTask,
   createImageGenerationTask,
   fetchAccounts,
+  fetchModels,
   fetchImageTasks,
   type Account,
   type ImageModel,
+  type Model,
   type ImageTask,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -50,13 +52,6 @@ const IMAGE_QUALITY_STORAGE_KEY = "chatgpt2api:image_last_quality";
 const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
-const SUPPORTED_IMAGE_MODELS: ImageModel[] = [
-  "gpt-image-2",
-  "codex-gpt-image-2",
-  "plus-codex-gpt-image-2",
-  "team-codex-gpt-image-2",
-  "pro-codex-gpt-image-2",
-];
 
 function clampImageCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
@@ -125,8 +120,18 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
   return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
 }
 
-function normalizeStoredImageModel(value: string | null): ImageModel {
-  return SUPPORTED_IMAGE_MODELS.includes(value as ImageModel) ? (value as ImageModel) : "gpt-image-2";
+function filterImageModels(items: Model[]): ImageModel[] {
+  return items
+    .map((item) => String(item.id || "").trim())
+    .filter((id, index, list) => id.toLowerCase().includes("image") && list.indexOf(id) === index);
+}
+
+function normalizeStoredImageModel(value: string | null, availableModels: ImageModel[]): ImageModel {
+  const normalized = String(value || "").trim();
+  if (normalized && availableModels.includes(normalized)) {
+    return normalized;
+  }
+  return availableModels[0] || "gpt-image-2";
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -380,6 +385,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageHeight, setImageHeight] = useState("1024");
   const [imageQuality, setImageQuality] = useState("auto");
   const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
+  const [imageModels, setImageModels] = useState<ImageModel[]>(["gpt-image-2"]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -485,14 +491,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         const storedRatio = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_RATIO_STORAGE_KEY) : null;
         const storedTier = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_TIER_STORAGE_KEY) : null;
         const storedQuality = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_QUALITY_STORAGE_KEY) : null;
-        const storedModel = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
         const storedCount = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
         setImageRatio(storedRatio || "1:1");
         setImageTier(storedTier || "1k");
         setImageWidth("1024");
         setImageHeight("1024");
         setImageQuality(storedQuality || "auto");
-        setImageModel(normalizeStoredImageModel(storedModel));
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
         const items = await listImageConversations();
@@ -521,6 +525,37 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     };
 
     void loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadImageModels = async () => {
+      try {
+        const data = await fetchModels();
+        const available = filterImageModels(Array.isArray(data.data) ? data.data : []);
+        if (cancelled || available.length === 0) {
+          return;
+        }
+        setImageModels(available);
+        const storedModel = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
+        setImageModel((current) => {
+          if (available.includes(current)) {
+            return current;
+          }
+          return normalizeStoredImageModel(storedModel, available);
+        });
+      } catch {
+        if (!cancelled) {
+          setImageModels(["gpt-image-2"]);
+        }
+      }
+    };
+
+    void loadImageModels();
     return () => {
       cancelled = true;
     };
@@ -1364,6 +1399,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             imageHeight={imageHeight}
             imageQuality={imageQuality}
             imageModel={imageModel}
+            imageModels={imageModels}
             availableQuota={availableQuota}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
