@@ -246,6 +246,7 @@ class ConversationRequest:
 @dataclass
 class ConversationState:
     text: str = ""
+    raw_text: str = ""
     conversation_id: str = ""
     file_ids: list[str] = field(default_factory=list)
     sediment_ids: list[str] = field(default_factory=list)
@@ -312,7 +313,27 @@ def strip_history(text: str, history_text: str = "") -> str:
     return text
 
 
-def assistant_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
+def sanitize_output_text(text: str) -> str:
+    text = str(text or "")
+
+    def replace_url(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        url = match.group(2).strip()
+        if label and url.startswith(("http://", "https://")):
+            return f"{label} ({url})"
+        return label or url
+
+    # ChatGPT web sometimes returns rich annotation markers using private-use
+    # characters. API clients cannot render those, so convert links and drop
+    # citations before emitting OpenAI-compatible text.
+    text = re.sub(r"\ue200url\ue202([^\ue202\ue201]*)\ue202([^\ue201]*)\ue201", replace_url, text)
+    text = re.sub(r"\ue200cite\ue202[^\ue201]*\ue201", "", text)
+    text = re.sub(r"\ue200[^\ue201]*\ue201", "", text)
+    text = re.sub(r"\ue200[^\ue201]*$", "", text)
+    return text
+
+
+def assistant_raw_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
     for candidate in (event, event.get("v")):
         if not isinstance(candidate, dict):
             continue
@@ -326,6 +347,10 @@ def assistant_text(event: dict[str, Any], current_text: str = "", history_text: 
         if text:
             return strip_history(text, history_text)
     return apply_text_patch(event, current_text, history_text)
+
+
+def assistant_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
+    return sanitize_output_text(assistant_raw_text(event, current_text, history_text))
 
 
 def event_assistant_text(event: dict[str, Any], history_text: str = "") -> str:
@@ -486,9 +511,12 @@ def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
         update_conversation_state(state, payload, event)
         if history_index < len(history_messages) and event_assistant_text(event, history_text) == history_messages[history_index]:
             history_index += 1
+            state.raw_text = ""
             state.text = ""
             continue
-        next_text = assistant_text(event, state.text, history_text)
+        next_raw_text = assistant_raw_text(event, state.raw_text, history_text)
+        next_text = sanitize_output_text(next_raw_text)
+        state.raw_text = next_raw_text
         if next_text != state.text:
             delta = next_text[len(state.text):] if next_text.startswith(state.text) else next_text
             state.text = next_text
