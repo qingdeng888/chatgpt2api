@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.support import require_identity, resolve_image_base_url
-from services.content_filter import check_request, request_text
+from services.content_filter import check_request, request_shape, request_text
 from services.log_service import LoggedCall
 from services.protocol import (
     anthropic_v1_messages,
@@ -114,7 +114,14 @@ def create_router() -> APIRouter:
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
         request_preview = request_text(payload.get("prompt"), payload.get("messages"))
-        call = LoggedCall(identity, "/v1/chat/completions", model, "文本生成", request_text=request_preview)
+        call = LoggedCall(
+            identity,
+            "/v1/chat/completions",
+            model,
+            "文本生成",
+            request_text=request_preview,
+            request_shape=request_shape(payload.get("messages")),
+        )
         await filter_or_log(call, request_preview)
         return await call.run(openai_v1_chat_complete.handle, payload)
 
@@ -124,7 +131,14 @@ def create_router() -> APIRouter:
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
         request_preview = request_text(payload.get("input"), payload.get("instructions"))
-        call = LoggedCall(identity, "/v1/responses", model, "Responses", request_text=request_preview)
+        call = LoggedCall(
+            identity,
+            "/v1/responses",
+            model,
+            "Responses",
+            request_text=request_preview,
+            request_shape=request_shape(payload.get("input")),
+        )
         await filter_or_log(call, request_preview)
         return await call.run(openai_v1_response.handle, payload)
 
