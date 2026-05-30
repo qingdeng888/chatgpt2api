@@ -53,6 +53,10 @@ SEARCH_POLL_INTERVAL_SECS = 3.0
 SEARCH_DONE_STATUS = {"finished_successfully", "finished_partial_completion"}
 SEARCH_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"]+)"')
 SEARCH_URL_RE = re.compile(r"https?://[^\s\"'<>）)\]}]+")
+FILE_SERVICE_ID_RE = re.compile(r"file-service://([A-Za-z0-9_-]+)")
+FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
+SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
+IMAGE_POLL_SETTLE_SECS = 2.0
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -1099,39 +1103,78 @@ class OpenAIBackendAPI:
     def _clean_search_url(self, value: Any) -> str:
         return str(value or "").strip().rstrip(".,;，。；")
 
+    @staticmethod
+    def _add_unique(values: list[str], candidates: list[str]) -> None:
+        for candidate in candidates:
+            if candidate and candidate not in values:
+                values.append(candidate)
+
+    @classmethod
+    def _extract_image_reference_ids(cls, payload: Any) -> tuple[list[str], list[str]]:
+        file_ids: list[str] = []
+        sediment_ids: list[str] = []
+
+        def walk(value: Any) -> None:
+            if isinstance(value, str):
+                cls._add_unique(file_ids, FILE_SERVICE_ID_RE.findall(value))
+                cls._add_unique(file_ids, FILE_ID_RE.findall(value))
+                cls._add_unique(sediment_ids, SEDIMENT_ID_RE.findall(value))
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(payload)
+        return file_ids, sediment_ids
+
+    @classmethod
+    def _has_image_asset_pointer(cls, payload: Any) -> bool:
+        if isinstance(payload, dict):
+            if str(payload.get("content_type") or "") == "image_asset_pointer":
+                return True
+            asset_pointer = str(payload.get("asset_pointer") or "")
+            if asset_pointer.startswith(("file-service://", "sediment://")):
+                return True
+            return any(cls._has_image_asset_pointer(item) for item in payload.values())
+        if isinstance(payload, list):
+            return any(cls._has_image_asset_pointer(item) for item in payload)
+        return False
+
     def _extract_image_tool_records(self, data: Dict[str, Any]) -> list[Dict[str, Any]]:
         """从 conversation 明细里提取图片工具输出记录。"""
         mapping = data.get("mapping") or {}
-        file_pat = re.compile(r"file-service://([A-Za-z0-9_-]+)")
-        sed_pat = re.compile(r"sediment://([A-Za-z0-9_-]+)")
         records = []
         for message_id, node in mapping.items():
             message = (node or {}).get("message") or {}
             author = message.get("author") or {}
             metadata = message.get("metadata") or {}
             content = message.get("content") or {}
-            if author.get("role") != "tool":
+            role = str(author.get("role") or "").strip().lower()
+            if role not in {"tool", "assistant"}:
                 continue
-            if content.get("content_type") != "multimodal_text":
+            is_image_gen = metadata.get("async_task_type") == "image_gen"
+            has_asset_pointer = self._has_image_asset_pointer(content) or self._has_image_asset_pointer(metadata)
+            if role == "assistant" and not (is_image_gen or has_asset_pointer):
                 continue
-            file_ids, sediment_ids = [], []
-            for part in content.get("parts") or []:
-                text = (part.get("asset_pointer") or "") if isinstance(part, dict) else (
-                    part if isinstance(part, str) else "")
-                for hit in file_pat.findall(text):
-                    if hit not in file_ids:
-                        file_ids.append(hit)
-                for hit in sed_pat.findall(text):
-                    if hit not in sediment_ids:
-                        sediment_ids.append(hit)
-            if metadata.get("async_task_type") != "image_gen" and not file_ids and not sediment_ids:
+            file_ids, sediment_ids = self._extract_image_reference_ids({"content": content, "metadata": metadata})
+            if not is_image_gen and not has_asset_pointer and not file_ids and not sediment_ids:
                 continue
             records.append(
                 {"message_id": message_id, "create_time": message.get("create_time") or 0, "file_ids": file_ids,
                  "sediment_ids": sediment_ids})
         return sorted(records, key=lambda item: item["create_time"])
 
-    def _poll_image_results(self, conversation_id: str, timeout_secs: float = 120.0) -> tuple[list[str], list[str]]:
+    def _poll_image_results(
+            self,
+            conversation_id: str,
+            timeout_secs: float = 120.0,
+            initial_file_ids: list[str] | None = None,
+            initial_sediment_ids: list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
         """Poll the conversation document until image file ids appear or budget runs out.
 
         - Sleeps image_poll_initial_wait_secs first (default 10s, +jitter). ChatGPT
@@ -1147,18 +1190,32 @@ class OpenAIBackendAPI:
         attempt = 0
         interval = float(config.image_poll_interval_secs)
         initial_wait = float(config.image_poll_initial_wait_secs)
+        file_ids: list[str] = []
+        sediment_ids: list[str] = []
+        self._add_unique(file_ids, initial_file_ids or [])
+        self._add_unique(sediment_ids, initial_sediment_ids or [])
+        has_initial_ids = bool(file_ids or sediment_ids)
+        last_hit_key: tuple[tuple[str, ...], tuple[str, ...]] | None = (
+            (tuple(file_ids), tuple(sediment_ids)) if has_initial_ids else None
+        )
         logger.info({
             "event": "image_poll_start",
             "conversation_id": conversation_id,
             "timeout_secs": timeout_secs,
             "initial_wait_secs": initial_wait,
             "interval_secs": interval,
+            "initial_file_ids": file_ids,
+            "initial_sediment_ids": sediment_ids,
         })
 
         def _remaining() -> float:
             return timeout_secs - (time.time() - start)
 
-        if initial_wait > 0:
+        if has_initial_ids:
+            settle_for = min(IMAGE_POLL_SETTLE_SECS, max(0.0, _remaining()))
+            if settle_for > 0:
+                time.sleep(settle_for)
+        elif initial_wait > 0:
             jitter = random.uniform(0, min(2.0, initial_wait * 0.2))
             sleep_for = min(initial_wait + jitter, max(0.0, _remaining()))
             if sleep_for > 0:
@@ -1202,7 +1259,6 @@ class OpenAIBackendAPI:
                     continue
                 break
 
-            file_ids, sediment_ids = [], []
             for record in self._extract_image_tool_records(conversation):
                 for file_id in record["file_ids"]:
                     if file_id not in file_ids:
@@ -1212,14 +1268,20 @@ class OpenAIBackendAPI:
                         sediment_ids.append(sediment_id)
             logger.debug({"event": "image_poll_check", "conversation_id": conversation_id, "attempt": attempt,
                           "file_ids": file_ids, "sediment_ids": sediment_ids})
-            if file_ids:
-                logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids,
-                             "sediment_ids": sediment_ids})
+            if file_ids or sediment_ids:
+                hit_key = (tuple(file_ids), tuple(sediment_ids))
+                if last_hit_key == hit_key:
+                    logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids,
+                                 "sediment_ids": sediment_ids})
+                    return file_ids, sediment_ids
+                last_hit_key = hit_key
+                logger.info({"event": "image_poll_hit_pending_settle", "conversation_id": conversation_id,
+                             "file_ids": file_ids, "sediment_ids": sediment_ids})
+                wait = min(IMAGE_POLL_SETTLE_SECS, max(0.0, _remaining()))
+                if wait > 0:
+                    time.sleep(wait)
+                    continue
                 return file_ids, sediment_ids
-            if sediment_ids:
-                logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": [],
-                             "sediment_ids": sediment_ids})
-                return [], sediment_ids
             logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id,
                           "elapsed_secs": round(time.time() - start, 1)})
             wait = min(interval, max(0.0, _remaining()))
@@ -1282,7 +1344,8 @@ class OpenAIBackendAPI:
                 })
                 continue
             if url:
-                urls.append(url)
+                if url not in urls:
+                    urls.append(url)
             else:
                 logger.debug({
                     "event": "image_download_url_empty",
@@ -1290,7 +1353,7 @@ class OpenAIBackendAPI:
                     "conversation_id": conversation_id,
                     "id": file_id,
                 })
-        if urls or not conversation_id:
+        if not conversation_id or not sediment_ids:
             logger.debug({
                 "event": "image_urls_resolved",
                 "conversation_id": conversation_id,
@@ -1312,7 +1375,8 @@ class OpenAIBackendAPI:
                 })
                 continue
             if url:
-                urls.append(url)
+                if url not in urls:
+                    urls.append(url)
             else:
                 logger.debug({
                     "event": "image_download_url_empty",
@@ -1338,12 +1402,42 @@ class OpenAIBackendAPI:
     ) -> list[str]:
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
-        if poll and conversation_id and not file_ids and not sediment_ids:
-            logger.info({"event": "image_resolve_poll_needed", "conversation_id": conversation_id})
-            polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id,
-                                                                            config.image_poll_timeout_secs)
-            file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
-            sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
+        if poll and conversation_id:
+            logger.info({
+                "event": "image_resolve_poll_needed",
+                "conversation_id": conversation_id,
+                "initial_file_ids": file_ids,
+                "initial_sediment_ids": sediment_ids,
+            })
+            try:
+                polled_file_ids, polled_sediment_ids = self._poll_image_results(
+                    conversation_id,
+                    config.image_poll_timeout_secs,
+                    file_ids,
+                    sediment_ids,
+                )
+            except ImagePollTimeoutError:
+                if not file_ids and not sediment_ids:
+                    raise
+                logger.warning({
+                    "event": "image_resolve_poll_partial_timeout",
+                    "conversation_id": conversation_id,
+                    "file_ids": file_ids,
+                    "sediment_ids": sediment_ids,
+                })
+            except Exception as exc:
+                if not file_ids and not sediment_ids:
+                    raise
+                logger.warning({
+                    "event": "image_resolve_poll_partial_error",
+                    "conversation_id": conversation_id,
+                    "file_ids": file_ids,
+                    "sediment_ids": sediment_ids,
+                    "error": repr(exc),
+                })
+            else:
+                file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
+                sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
@@ -1351,7 +1445,8 @@ class OpenAIBackendAPI:
         for url in urls:
             response = self.session.get(url, timeout=120)
             ensure_ok(response, "image_download")
-            images.append(response.content)
+            if response.content not in images:
+                images.append(response.content)
         return images
 
     def stream_conversation(
