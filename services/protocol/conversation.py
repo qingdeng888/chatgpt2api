@@ -429,12 +429,19 @@ def add_unique(values: list[str], candidates: list[str]) -> None:
             values.append(candidate)
 
 
+FILE_SERVICE_ID_RE = re.compile(r"file-service://([A-Za-z0-9_-]+)")
+FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
+SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
+
+
 def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
     conversation_match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
     conversation_id = conversation_match.group(1) if conversation_match else ""
+    file_ids: list[str] = []
     # Negative lookahead excludes "file-service" (URI prefix, not a real id).
-    file_ids = re.findall(r"(file[-_](?!service\b)[A-Za-z0-9]+)", payload)
-    sediment_ids = re.findall(r"sediment://([A-Za-z0-9_-]+)", payload)
+    add_unique(file_ids, FILE_SERVICE_ID_RE.findall(payload))
+    add_unique(file_ids, FILE_ID_RE.findall(payload))
+    sediment_ids = SEDIMENT_ID_RE.findall(payload)
     return conversation_id, file_ids, sediment_ids
 
 
