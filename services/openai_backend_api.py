@@ -42,8 +42,8 @@ class ChatRequirements:
     raw_finalize: Optional[Dict[str, Any]] = None
 
 
-DEFAULT_CLIENT_VERSION = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
-DEFAULT_CLIENT_BUILD_NUMBER = "5955942"
+DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
+DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 CODEX_RESPONSES_MODEL = "gpt-5.5"
@@ -988,14 +988,22 @@ class OpenAIBackendAPI:
     def _wait_search_result(self, conversation_id: str, timeout_secs: float, poll_interval_secs: float) -> Dict[str, Any]:
         deadline = time.time() + timeout_secs
         last_result: Dict[str, Any] | None = None
+        last_answer = ""
+        stable_hits = 0
         while time.time() < deadline:
             try:
                 last_result = self._extract_search_result(conversation_id, self._get_search_conversation(conversation_id))
             except UpstreamHTTPError as exc:
                 if exc.status_code not in {404, 409, 423, 429, 500, 502, 503, 504}:
                     raise
-            if last_result and last_result.get("answer") and last_result.get("status") in SEARCH_DONE_STATUS:
-                return last_result
+            if last_result and last_result.get("answer"):
+                if last_result.get("status") in SEARCH_DONE_STATUS:
+                    return last_result
+                answer = str(last_result.get("answer") or "")
+                stable_hits = stable_hits + 1 if answer == last_answer else 0
+                last_answer = answer
+                if stable_hits >= 2:
+                    return last_result
             time.sleep(poll_interval_secs)
         if last_result:
             return last_result

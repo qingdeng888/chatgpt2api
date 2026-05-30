@@ -303,6 +303,6 @@ class LoggedCall:
         if email:
             detail["account_email"] = email
         collected_urls = [*(urls or []), *_collect_urls(result)]
-        if collected_urls:
+        if collected_urls and not self.endpoint.startswith("/v1/search"):
             detail["urls"] = list(dict.fromkeys(collected_urls))
         log_service.add(LOG_TYPE_CALL, f"{self.summary}{suffix}", detail)
