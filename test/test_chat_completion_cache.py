@@ -9,6 +9,7 @@ from services.config import config
 from services.protocol import openai_v1_chat_complete, openai_v1_response
 from services.protocol.chat_completion_cache import chat_completion_cache
 from services.protocol.conversation import iter_conversation_payloads, sanitize_output_text
+from utils.helper import extract_image_from_message_content
 
 
 PNG_1X1 = base64.b64decode(
@@ -190,8 +191,24 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         self.assertEqual(
             sanitize_output_text(text),
-            "Repo: basketikun/chatgpt2api (https://github.com/basketikun/chatgpt2api) details .",
+            "Repo: basketikun/chatgpt2api (https://github.com/basketikun/chatgpt2api) details.",
         )
+
+    def test_output_sanitizer_preserves_annotated_entity_text(self) -> None:
+        text = (
+            "The character is from \ue200entity\ue202Invincible\ue201, "
+            "which is based on the comic series \ue200entity\ue202Invincible\ue201."
+        )
+
+        self.assertEqual(
+            sanitize_output_text(text),
+            "The character is from Invincible, which is based on the comic series Invincible.",
+        )
+
+    def test_output_sanitizer_preserves_readable_cite_label(self) -> None:
+        text = "The character is \ue200cite\ue202Invincible\ue202turn0search0\ue201."
+
+        self.assertEqual(sanitize_output_text(text), "The character is Invincible.")
 
     def test_stream_sanitizer_does_not_emit_partial_annotation_or_repeat_prefix(self) -> None:
         events = [
@@ -206,7 +223,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             if event.get("type") == "conversation.delta"
         ]
 
-        self.assertEqual("".join(deltas), "Repo: chatgpt2api done .")
+        self.assertEqual("".join(deltas), "Repo: chatgpt2api done.")
         self.assertFalse(any("\ue200" in delta or "\ue202" in delta or "\ue201" in delta for delta in deltas))
 
     def test_responses_tools_add_honest_no_tool_guard(self) -> None:
@@ -300,6 +317,19 @@ class ChatCompletionCacheTests(unittest.TestCase):
         self.assertEqual(content[1]["type"], "image")
         self.assertEqual(content[1]["data"], PNG_1X1)
         self.assertEqual(content[1]["mime"], "image/png")
+
+    def test_image_extractor_supports_extra_image_object_shapes(self) -> None:
+        encoded = base64.b64encode(PNG_1X1).decode("ascii")
+
+        images = extract_image_from_message_content([
+            {"type": "image", "data": PNG_1X1, "mime": "image/png"},
+            {"type": "input_image", "base64": encoded, "mime_type": "image/png"},
+            {"type": "input_image", "source": {"type": "base64", "data": encoded, "media_type": "image/png"}},
+        ])
+
+        self.assertEqual(len(images), 3)
+        self.assertEqual([image[1] for image in images], ["image/png", "image/png", "image/png"])
+        self.assertTrue(all(image[0] == PNG_1X1 for image in images))
 
 
 if __name__ == "__main__":
