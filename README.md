@@ -115,6 +115,7 @@ environment:
 ### 实验性 / 规划中
 
 - `/v1/complete` 文本补全与流式输出已实现，但仍在测试，目前会出现对话重复的问题，请谨慎测试使用
+- `/v1/chat/completions` 文本链路支持短 TTL 缓存、重复请求合并与相邻重复消息清理，可通过 `chat_completion_cache` 配置调整
 - 详细状态说明见：[功能清单](./docs/feature-status.en.md)
 
 ## 效果展示

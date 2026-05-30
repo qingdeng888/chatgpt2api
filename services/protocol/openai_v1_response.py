@@ -7,6 +7,7 @@ from typing import Any, Iterable, Iterator
 
 from fastapi import HTTPException
 
+from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
@@ -25,9 +26,25 @@ from utils.image_tokens import (
     token_usage,
 )
 
+TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
+    "This compatibility backend cannot execute local tools, shell commands, web searches, "
+    "or file operations. Do not claim to have run tools or inspected external resources. "
+    "If a user asks you to use a tool, say that tool execution is unavailable through this backend."
+)
+
 
 def is_text_response_request(body: dict[str, Any]) -> bool:
     return not has_response_image_generation_tool(body)
+
+
+def has_non_image_tools(body: dict[str, Any]) -> bool:
+    tools = body.get("tools")
+    if not isinstance(tools, list):
+        return False
+    return any(
+        isinstance(tool, dict) and str(tool.get("type") or "").strip() != "image_generation"
+        for tool in tools
+    )
 
 
 def response_image_tool(body: dict[str, Any]) -> dict[str, object]:
@@ -174,9 +191,17 @@ def response_completed(
     return response
 
 
-def stream_text_response(backend, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+def text_response_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     model = str(body.get("model") or "auto").strip() or "auto"
-    messages = messages_from_input(body.get("input"), body.get("instructions"))
+    messages = normalize_text_messages(messages_from_input(body.get("input"), body.get("instructions")))
+    if has_non_image_tools(body):
+        messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
+    return model, messages
+
+
+def stream_text_response(backend, body: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Iterator[dict[str, Any]]:
+    model = str(body.get("model") or "auto").strip() or "auto"
+    messages = messages if messages is not None else messages_from_input(body.get("input"), body.get("instructions"))
     response_id = f"resp_{uuid.uuid4().hex}"
     item_id = f"msg_{uuid.uuid4().hex}"
     created = int(time.time())
@@ -250,7 +275,12 @@ def collect_response(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     if is_text_response_request(body):
-        yield from stream_text_response(text_backend(), body)
+        model, messages = text_response_parts(body)
+        key = cache_key(body, messages, stream=bool(body.get("stream")))
+        yield from chat_completion_cache.get_or_compute_stream(
+            key,
+            lambda: stream_text_response(text_backend(), body, messages),
+        )
         return
 
     prompt = extract_response_prompt(body.get("input"))
