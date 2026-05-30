@@ -294,14 +294,14 @@ def stream_image_response(
             continue
         items = image_output_items(prompt, output.data)
         if items:
-            item = items[0]
             usage = image_usage(
                 input_text_tokens=count_text_tokens(prompt, model),
                 input_image_tokens=input_image_tokens,
                 output_tokens=count_image_output_items_tokens(output.data, size, quality),
             )
-            yield {"type": "response.output_item.done", "output_index": 0, "item": item}
-            yield response_completed(response_id, model, created, [item], usage)
+            for output_index, item in enumerate(items):
+                yield {"type": "response.output_item.done", "output_index": output_index, "item": item}
+            yield response_completed(response_id, model, created, items, usage)
             return
     raise RuntimeError("image generation failed")
 
