@@ -6,6 +6,7 @@ from typing import Any, Iterable, Iterator
 
 from fastapi import HTTPException
 
+from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
@@ -26,6 +27,12 @@ from utils.image_tokens import (
     count_image_inputs_tokens,
     count_image_output_items_tokens,
     image_usage,
+)
+
+TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
+    "This compatibility backend cannot execute local tools, shell commands, web searches, "
+    "or file operations. Do not claim to have run tools or inspected external resources. "
+    "If a user asks you to use a tool, say that tool execution is unavailable through this backend."
 )
 
 
@@ -66,10 +73,12 @@ def completion_response(
             "prompt_tokens_details": {
                 "text_tokens": prompt_text_tokens,
                 "image_tokens": prompt_image_tokens,
+                "cached_tokens": 0,
             },
             "completion_tokens_details": {
                 "text_tokens": completion_tokens,
                 "image_tokens": 0,
+                "reasoning_tokens": 0,
             },
         },
     }
@@ -127,7 +136,10 @@ def chat_image_args(body: dict[str, Any]) -> tuple[str, str, int, list[tuple[byt
 
 def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     model = str(body.get("model") or "auto").strip() or "auto"
-    messages = normalize_messages(chat_messages_from_body(body))
+    messages = normalize_text_messages(normalize_messages(chat_messages_from_body(body)))
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
     return model, messages
 
 
@@ -200,9 +212,20 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_image_chat_request(body):
             return image_chat_events(body)
         model, messages = text_chat_parts(body)
-        return stream_text_chat_completion(text_backend(), messages, model)
+        key = cache_key(body, messages, stream=True)
+        return chat_completion_cache.get_or_compute_stream(
+            key,
+            lambda: stream_text_chat_completion(text_backend(), messages, model),
+        )
     if is_image_chat_request(body):
         return image_chat_response(body)
     model, messages = text_chat_parts(body)
-    request = ConversationRequest(model=model, messages=messages)
-    return completion_response(model, collect_text(text_backend(), request), messages=messages)
+    key = cache_key(body, messages, stream=False)
+    return chat_completion_cache.get_or_compute_response(
+        key,
+        lambda: completion_response(
+            model,
+            collect_text(text_backend(), ConversationRequest(model=model, messages=messages)),
+            messages=messages,
+        ),
+    )
