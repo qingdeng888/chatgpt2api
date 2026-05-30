@@ -33,7 +33,7 @@ TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
     "If a user asks you to use a tool, say that tool execution is unavailable through this backend."
 )
 
-RESPONSE_CONTENT_PART_TYPES = {"text", "input_text", "output_text", "image_url", "input_image"}
+RESPONSE_CONTENT_PART_TYPES = {"text", "input_text", "output_text", "image_url", "input_image", "image"}
 
 
 def is_text_response_request(body: dict[str, Any]) -> bool:
