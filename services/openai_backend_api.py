@@ -47,6 +47,12 @@ DEFAULT_CLIENT_BUILD_NUMBER = "5955942"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 CODEX_RESPONSES_MODEL = "gpt-5.5"
+SEARCH_MODEL = "gpt-5-5"
+SEARCH_TIMEOUT_SECS = 300.0
+SEARCH_POLL_INTERVAL_SECS = 3.0
+SEARCH_DONE_STATUS = {"finished_successfully", "finished_partial_completion"}
+SEARCH_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"]+)"')
+SEARCH_URL_RE = re.compile(r"https?://[^\s\"'<>）)\]}]+")
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -888,6 +894,202 @@ class OpenAIBackendAPI:
                                     timeout=60)
         ensure_ok(response, path)
         return response.json()
+
+    def search(self, prompt: str, model: str = SEARCH_MODEL, timeout_secs: float = SEARCH_TIMEOUT_SECS,
+               poll_interval_secs: float = SEARCH_POLL_INTERVAL_SECS) -> Dict[str, Any]:
+        if not self.access_token:
+            raise RuntimeError("access_token is required for search")
+        conduit_token = self._prepare_search_conversation(prompt, model)
+        self._bootstrap()
+        conversation_id = self._run_search_conversation(prompt, conduit_token, model)
+        return self._wait_search_result(conversation_id, timeout_secs, poll_interval_secs)
+
+    def _prepare_search_conversation(self, prompt: str, model: str) -> str:
+        path = "/backend-api/f/conversation/prepare"
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._headers(path, {"Accept": "*/*", "Content-Type": "application/json", "X-Conduit-Token": "no-token"}),
+            json={
+                "action": "next",
+                "fork_from_shared_post": False,
+                "parent_message_id": "client-created-root",
+                "model": model,
+                "client_prepare_state": "success",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Shanghai",
+                "conversation_mode": {"kind": "primary_assistant"},
+                "system_hints": ["search"],
+                "partial_query": {"id": new_uuid(), "author": {"role": "user"}, "content": {"content_type": "text", "parts": [prompt]}},
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "client_contextual_info": {"app_name": "chatgpt.com"},
+            },
+            timeout=60,
+        )
+        ensure_ok(response, path)
+        token = str(response.json().get("conduit_token") or "")
+        if not token:
+            raise RuntimeError("missing conduit_token")
+        return token
+
+    def _run_search_conversation(self, prompt: str, conduit_token: str, model: str) -> str:
+        requirements = self._get_chat_requirements()
+        path = "/backend-api/f/conversation"
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
+            json={
+                "action": "next",
+                "messages": [{
+                    "id": new_uuid(),
+                    "author": {"role": "user"},
+                    "create_time": time.time(),
+                    "content": {"content_type": "text", "parts": [prompt]},
+                    "metadata": {
+                        "developer_mode_connector_ids": [],
+                        "selected_github_repos": [],
+                        "selected_all_github_repos": False,
+                        "system_hints": ["search"],
+                        "serialization_metadata": {"custom_symbol_offsets": []},
+                    },
+                }],
+                "parent_message_id": "client-created-root",
+                "model": model,
+                "client_prepare_state": "success",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Shanghai",
+                "conversation_mode": {"kind": "primary_assistant"},
+                "enable_message_followups": True,
+                "system_hints": [],
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "force_use_search": True,
+                "client_reported_search_source": "conversation_composer_web_icon",
+                "client_contextual_info": {"is_dark_mode": False, "time_since_loaded": 36, "page_height": 925, "page_width": 886, "pixel_ratio": 2, "screen_height": 1440, "screen_width": 2560, "app_name": "chatgpt.com"},
+                "paragen_cot_summary_display_override": "allow",
+                "force_parallel_switch": "auto",
+            },
+            timeout=300,
+            stream=True,
+        )
+        ensure_ok(response, path)
+        conversation_id = ""
+        try:
+            for payload in iter_sse_payloads(response):
+                conversation_id = conversation_id or self._find_search_value(payload, "conversation_id")
+                if payload == "[DONE]":
+                    break
+        finally:
+            response.close()
+        if not conversation_id:
+            raise RuntimeError("conversation_id not found in stream")
+        return conversation_id
+
+    def _wait_search_result(self, conversation_id: str, timeout_secs: float, poll_interval_secs: float) -> Dict[str, Any]:
+        deadline = time.time() + timeout_secs
+        last_result: Dict[str, Any] | None = None
+        while time.time() < deadline:
+            try:
+                last_result = self._extract_search_result(conversation_id, self._get_search_conversation(conversation_id))
+            except UpstreamHTTPError as exc:
+                if exc.status_code not in {404, 409, 423, 429, 500, 502, 503, 504}:
+                    raise
+            if last_result and last_result.get("answer") and last_result.get("status") in SEARCH_DONE_STATUS:
+                return last_result
+            time.sleep(poll_interval_secs)
+        if last_result:
+            return last_result
+        raise RuntimeError(f"timed out waiting for search result: {conversation_id}")
+
+    def _get_search_conversation(self, conversation_id: str) -> Dict[str, Any]:
+        path = f"/backend-api/conversation/{conversation_id}"
+        headers = self._headers(path, {"Accept": "*/*"})
+        headers["Referer"] = f"{self.base_url}/c/{conversation_id}"
+        headers["X-OpenAI-Target-Route"] = "/backend-api/conversation/{conversation_id}"
+        response = self.session.get(self.base_url + path, headers=headers, timeout=60)
+        ensure_ok(response, path)
+        return response.json()
+
+    def _extract_search_result(self, conversation_id: str, conversation: Dict[str, Any]) -> Dict[str, Any]:
+        messages = []
+        for node in (conversation.get("mapping") or {}).values():
+            message = (node or {}).get("message") or {}
+            if ((message.get("author") or {}).get("role") or "") == "assistant":
+                messages.append(message)
+        message = max(messages, key=lambda item: float(item.get("create_time") or 0.0)) if messages else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        finish_details = metadata.get("finish_details") if isinstance(metadata.get("finish_details"), dict) else {}
+        answer = self._search_message_text(message)
+        sources = self._extract_search_sources(message)
+        for url in SEARCH_URL_RE.findall(answer):
+            url = self._clean_search_url(url)
+            if url and all(item["url"] != url for item in sources):
+                sources.append({"title": "", "url": url, "snippet": "", "source_type": ""})
+        return {
+            "conversation_id": conversation_id,
+            "status": str(finish_details.get("type") or metadata.get("status") or self._find_search_value(message, "status") or "").strip(),
+            "answer": answer,
+            "sources": sources,
+            "assistant_message_id": str(message.get("id") or ""),
+            "create_time": float(message.get("create_time") or 0.0),
+        }
+
+    def _extract_search_sources(self, payload: Any) -> list[Dict[str, str]]:
+        sources: list[Dict[str, str]] = []
+        for obj in self._walk_search_dicts(payload):
+            metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+            url = self._clean_search_url(obj.get("url") or obj.get("link") or obj.get("source_url") or metadata.get("url"))
+            if url and all(item["url"] != url for item in sources):
+                sources.append({
+                    "title": str(obj.get("title") or obj.get("name") or obj.get("source") or "").strip(),
+                    "url": url,
+                    "snippet": str(obj.get("snippet") or obj.get("text") or obj.get("description") or "").strip(),
+                    "source_type": str(obj.get("type") or obj.get("source_type") or "").strip(),
+                })
+        return sources
+
+    def _search_message_text(self, message: Any) -> str:
+        content = message.get("content") if isinstance(message, dict) else {}
+        parts = []
+        if isinstance(content, dict):
+            if isinstance(content.get("text"), str):
+                parts.append(content["text"])
+            for part in content.get("parts") or []:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.extend(str(part.get(key) or "") for key in ("text", "summary", "content") if part.get(key))
+        elif isinstance(content, str):
+            parts.append(content)
+        return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
+
+    def _find_search_value(self, payload: Any, key: str) -> str:
+        if isinstance(payload, str):
+            match = SEARCH_CONVERSATION_ID_RE.search(payload) if key == "conversation_id" else None
+            if match:
+                return match.group(1)
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                return ""
+        if isinstance(payload, dict):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+            return next((found for item in payload.values() if (found := self._find_search_value(item, key))), "")
+        if isinstance(payload, list):
+            return next((found for item in payload if (found := self._find_search_value(item, key))), "")
+        return ""
+
+    def _walk_search_dicts(self, payload: Any) -> list[Dict[str, Any]]:
+        if isinstance(payload, dict):
+            return [payload, *(item for value in payload.values() for item in self._walk_search_dicts(value))]
+        if isinstance(payload, list):
+            return [item for value in payload for item in self._walk_search_dicts(value)]
+        return []
+
+    def _clean_search_url(self, value: Any) -> str:
+        return str(value or "").strip().rstrip(".,;，。；")
 
     def _extract_image_tool_records(self, data: Dict[str, Any]) -> list[Dict[str, Any]]:
         """从 conversation 明细里提取图片工具输出记录。"""
