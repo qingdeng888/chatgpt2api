@@ -39,7 +39,7 @@ export function VersionReleaseDialog({ className }: { className?: string }) {
       <button
         type="button"
         className={cn(
-          "relative rounded-md bg-stone-100 px-2 py-1 text-[11px] font-medium text-stone-500 transition hover:text-stone-900 dark:bg-white/8 dark:text-stone-300 dark:hover:text-white",
+          "relative px-1 py-1 text-[11px] font-medium text-stone-500 transition hover:text-stone-900 dark:text-stone-300 dark:hover:text-white",
           className,
         )}
         onClick={openReleaseModal}
