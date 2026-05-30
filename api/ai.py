@@ -15,6 +15,7 @@ from services.protocol import (
     openai_v1_image_generations,
     openai_v1_models,
     openai_v1_response,
+    openai_search,
 )
 
 
@@ -54,6 +55,10 @@ class AnthropicMessageRequest(BaseModel):
     messages: list[dict[str, object]] | None = None
     system: object | None = None
     stream: bool | None = None
+
+
+class SearchRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
 
 
 async def filter_or_log(call: LoggedCall, text: str) -> None:
@@ -137,5 +142,12 @@ def create_router() -> APIRouter:
         call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview)
         await filter_or_log(call, request_preview)
         return await call.run(anthropic_v1_messages.handle, payload, sse="anthropic")
+
+    @router.post("/v1/search")
+    async def search(body: SearchRequest, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt)
+        await filter_or_log(call, body.prompt)
+        return await call.run(openai_search.handle, body.model_dump(mode="python"))
 
     return router
