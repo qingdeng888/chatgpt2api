@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.support import require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
+from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall
 from services.protocol import (
     anthropic_v1_messages,
@@ -59,6 +61,12 @@ class AnthropicMessageRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
+
+
+class EditableFileTaskRequest(BaseModel):
+    prompt: str = ""
+    base64_images: list[str] = Field(default_factory=list)
+    client_task_id: str | None = None
 
 
 async def filter_or_log(call: LoggedCall, text: str) -> None:
@@ -163,5 +171,45 @@ def create_router() -> APIRouter:
         call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
         return await call.run(openai_search.handle, body.model_dump(mode="python"))
+
+    @router.get("/v1/editable-file-tasks")
+    async def list_editable_file_tasks(ids: str = "", authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        task_ids = [item.strip() for item in ids.split(",") if item.strip()]
+        return await run_in_threadpool(editable_file_task_service.list_tasks, identity, task_ids)
+
+    @router.get("/files/{file_path:path}")
+    async def download_editable_file(file_path: str):
+        try:
+            path = await run_in_threadpool(editable_file_task_service.public_file_path, file_path)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail={"error": "file not found"}) from exc
+        return FileResponse(path, filename=path.name)
+
+    @router.post("/v1/ppt/generations")
+    async def create_ppt_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        await filter_or_log(LoggedCall(identity, "/v1/ppt/generations", "gpt-5-5-thinking", "PPT生成任务", request_text=body.prompt), body.prompt)
+        return await run_in_threadpool(
+            editable_file_task_service.submit_ppt,
+            identity,
+            client_task_id=body.client_task_id or "",
+            prompt=body.prompt,
+            base64_images=body.base64_images,
+            base_url=resolve_image_base_url(request),
+        )
+
+    @router.post("/v1/psd/generations")
+    async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        await filter_or_log(LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt), body.prompt)
+        return await run_in_threadpool(
+            editable_file_task_service.submit_psd,
+            identity,
+            client_task_id=body.client_task_id or "",
+            prompt=body.prompt,
+            base64_images=body.base64_images,
+            base_url=resolve_image_base_url(request),
+        )
 
     return router
