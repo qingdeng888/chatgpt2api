@@ -37,6 +37,17 @@ DEFAULT_IMAGE_STORAGE = {
     "public_base_url": "",
 }
 
+DEFAULT_CHAT_COMPLETION_CACHE = {
+    "enabled": True,
+    "ttl_seconds": 60,
+    "max_entries": 256,
+    "dedupe_inflight": True,
+    "stream_cache": True,
+    "normalize_messages": True,
+    "drop_adjacent_duplicates": True,
+    "drop_assistant_history": False,
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -112,6 +123,43 @@ def _normalize_image_storage_settings(value: object) -> dict[str, object]:
         "webdav_password": str(source.get("webdav_password") or "").strip(),
         "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
+    }
+
+
+def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), DEFAULT_CHAT_COMPLETION_CACHE["enabled"]),
+        "ttl_seconds": _normalize_positive_int(
+            source.get("ttl_seconds"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["ttl_seconds"]),
+            0,
+        ),
+        "max_entries": _normalize_positive_int(
+            source.get("max_entries"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["max_entries"]),
+            1,
+        ),
+        "dedupe_inflight": _normalize_bool(
+            source.get("dedupe_inflight"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["dedupe_inflight"]),
+        ),
+        "stream_cache": _normalize_bool(
+            source.get("stream_cache"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["stream_cache"]),
+        ),
+        "normalize_messages": _normalize_bool(
+            source.get("normalize_messages"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["normalize_messages"]),
+        ),
+        "drop_adjacent_duplicates": _normalize_bool(
+            source.get("drop_adjacent_duplicates"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_adjacent_duplicates"]),
+        ),
+        "drop_assistant_history": _normalize_bool(
+            source.get("drop_assistant_history"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_assistant_history"]),
+        ),
     }
 
 
@@ -344,6 +392,7 @@ class ConfigStore:
         data["global_system_prompt"] = self.global_system_prompt
         data["backup"] = self.get_backup_settings()
         data["image_storage"] = self.get_image_storage_settings()
+        data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data.pop("auth-key", None)
         return data
 
@@ -358,6 +407,10 @@ class ConfigStore:
         if "image_storage" in next_data:
             next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
             _validate_image_storage_settings(next_data["image_storage"])
+        if "chat_completion_cache" in next_data:
+            next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
+                next_data.get("chat_completion_cache")
+            )
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -368,6 +421,9 @@ class ConfigStore:
 
     def get_image_storage_settings(self) -> dict[str, object]:
         return _normalize_image_storage_settings(self.data.get("image_storage"))
+
+    def get_chat_completion_cache_settings(self) -> dict[str, object]:
+        return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

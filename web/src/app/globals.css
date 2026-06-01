@@ -224,3 +224,8 @@
   from { transform: scaleX(0); }
   to { transform: scaleX(1); }
 }
+
+::view-transition-old(root), ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
