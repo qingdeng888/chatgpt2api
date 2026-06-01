@@ -11,6 +11,7 @@ import {
   CircleOff,
   Copy,
   Download,
+  Link2,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -44,11 +45,14 @@ import {
   deleteAccounts,
   exportAccounts,
   fetchAccounts,
+  fetchModels,
   refreshAccounts,
+  testProxy,
   updateAccount,
   type Account,
   type AccountExportFormat,
   type AccountStatus,
+  type Model,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
@@ -183,9 +187,21 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
+function displayAccountSource(account: Account) {
+  const source = String(account.source_type || "").trim().toLowerCase();
+  if (!source) {
+    return "web";
+  }
+  if (source === "web") {
+    return "web";
+  }
+  return source;
+}
+
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -194,7 +210,10 @@ function AccountsPageContent() {
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
+  const [editProxy, setEditProxy] = useState("");
+  const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -218,12 +237,26 @@ function AccountsPageContent() {
     }
   };
 
+  const loadModels = async () => {
+    setIsLoadingModels(true);
+    try {
+      const data = await fetchModels();
+      setAvailableModels(Array.isArray(data.data) ? data.data : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "加载模型列表失败";
+      toast.error(message);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
   useEffect(() => {
     if (didLoadRef.current) {
       return;
     }
     didLoadRef.current = true;
     void loadAccounts();
+    void loadModels();
   }, []);
 
   const filteredAccounts = useMemo(() => {
@@ -336,6 +369,26 @@ function AccountsPageContent() {
   const openEditDialog = (account: Account) => {
     setEditingAccount(account);
     setEditStatus(account.status);
+    setEditProxy(account.proxy ?? "");
+  };
+
+  const handleTestAccountProxy = async () => {
+    const candidate = editProxy.trim();
+    if (!candidate) {
+      toast.error("请先填写代理地址");
+      return;
+    }
+    setIsTestingProxy(true);
+    try {
+      const data = await testProxy(candidate);
+      data.result.ok
+        ? toast.success(`代理可用（${data.result.latency_ms} ms，HTTP ${data.result.status}）`)
+        : toast.error(`代理不可用：${data.result.error ?? "未知错误"}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "测试代理失败");
+    } finally {
+      setIsTestingProxy(false);
+    }
   };
 
   const handleUpdateAccount = async () => {
@@ -347,6 +400,7 @@ function AccountsPageContent() {
     try {
       const data = await updateAccount(editingAccount.access_token, {
         status: editStatus,
+        proxy: editProxy.trim(),
       });
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -450,7 +504,7 @@ function AccountsPageContent() {
           <DialogHeader className="gap-2">
             <DialogTitle>编辑账户</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              手动修改账号状态。
+              手动修改账号状态和专属代理。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -470,6 +524,26 @@ function AccountsPageContent() {
                     ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">账号代理</label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={editProxy}
+                  onChange={(event) => setEditProxy(event.target.value)}
+                  placeholder="留空走全局代理，例如 http://127.0.0.1:7890"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl border-stone-200 bg-white px-4 text-stone-700 sm:w-24"
+                  onClick={() => void handleTestAccountProxy()}
+                  disabled={isTestingProxy}
+                >
+                  {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+                  测试
+                </Button>
+              </div>
             </div>
           </div>
           <DialogFooter className="pt-2">
@@ -515,6 +589,42 @@ function AccountsPageContent() {
             );
           })}
         </div>
+        <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+          <CardContent className="p-4">
+            <div className="mb-3 text-sm font-medium text-stone-700">
+              系统可用模型
+              <span className="ml-1 text-stone-400">({availableModels.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {availableModels.length > 0 ? (
+                availableModels.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className="inline-flex cursor-pointer items-center rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-700 transition hover:border-stone-300 hover:bg-stone-50"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(model.id);
+                      toast.success("模型名已复制");
+                    }}
+                    title={`点击复制 ${model.id}`}
+                  >
+                    <img
+                      src="/openai.svg"
+                      alt=""
+                      aria-hidden="true"
+                      className="mr-1.5 size-3.5 shrink-0"
+                    />
+                    {model.id}
+                  </button>
+                ))
+              ) : isLoadingModels ? (
+                <span className="text-sm text-stone-400">正在加载模型列表...</span>
+              ) : (
+                <span className="text-sm text-stone-400">当前暂无可用模型</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="space-y-4">
@@ -655,7 +765,7 @@ function AccountsPageContent() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left">
+              <table className="w-full min-w-[1000px] text-left">
                 <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3">
@@ -666,8 +776,10 @@ function AccountsPageContent() {
                     </th>
                     <th className="w-56 px-4 py-3">token</th>
                     <th className="w-28 px-4 py-3">类型</th>
+                    <th className="w-24 px-4 py-3">来源</th>
                     <th className="w-24 px-4 py-3">状态</th>
                     <th className="w-56 px-4 py-3">账号信息</th>
+                    <th className="w-32 px-4 py-3">创建时间</th>
                     <th className="w-24 px-4 py-3">额度</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
                     <th className="w-18 px-4 py-3">成功</th>
@@ -723,6 +835,11 @@ function AccountsPageContent() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3">
+                          <Badge variant="outline" className="rounded-md border-stone-200 text-stone-600">
+                            {displayAccountSource(account)}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
                           <Badge
                             variant={status.badge}
                             className="inline-flex items-center gap-1 rounded-md px-2 py-1"
@@ -733,6 +850,17 @@ function AccountsPageContent() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="text-xs leading-5 text-stone-500">{renderPrivacyEmail(account.email)}</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs leading-5 text-stone-500">
+                          {(() => {
+                            const raw = (account as any).created_at;
+                            if (!raw) return "—";
+                            try {
+                              const d = new Date(raw + "Z");
+                              if (isNaN(d.getTime())) return String(raw).slice(0, 10);
+                              return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+                            } catch { return String(raw).slice(0, 10); }
+                          })()}
                         </td>
                         <td className="px-4 py-3">
                           <Badge variant="info" className="rounded-md">

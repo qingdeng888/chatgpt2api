@@ -21,8 +21,11 @@ import {
   createImageEditTask,
   createImageGenerationTask,
   fetchAccounts,
+  fetchModels,
   fetchImageTasks,
   type Account,
+  type ImageModel,
+  type Model,
   type ImageTask,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -43,13 +46,21 @@ import {
 } from "@/store/image-conversations";
 
 const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_id";
-const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
+const IMAGE_RATIO_STORAGE_KEY = "chatgpt2api:image_last_ratio";
+const IMAGE_TIER_STORAGE_KEY = "chatgpt2api:image_last_tier";
+const IMAGE_QUALITY_STORAGE_KEY = "chatgpt2api:image_last_quality";
+const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
 
 function clampImageCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
 }
+function parseImageSize(size: string) {
+  const match = size.match(/^(\d+)x(\d+)$/);
+  return match ? { width: match[1], height: match[2] } : { width: "1024", height: "1024" };
+}
+
 const activeConversationQueueIds = new Set<string>();
 
 function getResultsDistanceFromBottom(element: HTMLElement) {
@@ -107,6 +118,20 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
     bytes[index] = binary.charCodeAt(index);
   }
   return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
+}
+
+function filterImageModels(items: Model[]): ImageModel[] {
+  return items
+    .map((item) => String(item.id || "").trim())
+    .filter((id, index, list) => id.toLowerCase().includes("image") && list.indexOf(id) === index);
+}
+
+function normalizeStoredImageModel(value: string | null, availableModels: ImageModel[]): ImageModel {
+  const normalized = String(value || "").trim();
+  if (normalized && availableModels.includes(normalized)) {
+    return normalized;
+  }
+  return availableModels[0] || "gpt-image-2";
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -353,8 +378,14 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [imagePrompt, setImagePrompt] = useState("");
-  const [imageCount, setImageCount] = useState("1");
-  const [imageSize, setImageSize] = useState("");
+  const [imageCount, setImageCount] = useState("3");
+  const [imageRatio, setImageRatio] = useState("auto");
+  const [imageTier, setImageTier] = useState("1k");
+  const [imageWidth, setImageWidth] = useState("1024");
+  const [imageHeight, setImageHeight] = useState("1024");
+  const [imageQuality, setImageQuality] = useState("auto");
+  const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
+  const [imageModels, setImageModels] = useState<ImageModel[]>(["gpt-image-2"]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -457,9 +488,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
     const loadHistory = async () => {
       try {
-        const storedSize = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_SIZE_STORAGE_KEY) : null;
+        const storedRatio = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_RATIO_STORAGE_KEY) : null;
+        const storedTier = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_TIER_STORAGE_KEY) : null;
+        const storedQuality = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_QUALITY_STORAGE_KEY) : null;
         const storedCount = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
-        setImageSize(storedSize || "");
+        setImageRatio(storedRatio || "1:1");
+        setImageTier(storedTier || "1k");
+        setImageWidth("1024");
+        setImageHeight("1024");
+        setImageQuality(storedQuality || "auto");
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
         const items = await listImageConversations();
@@ -488,6 +525,37 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     };
 
     void loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadImageModels = async () => {
+      try {
+        const data = await fetchModels();
+        const available = filterImageModels(Array.isArray(data.data) ? data.data : []);
+        if (cancelled || available.length === 0) {
+          return;
+        }
+        setImageModels(available);
+        const storedModel = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
+        setImageModel((current) => {
+          if (available.includes(current)) {
+            return current;
+          }
+          return normalizeStoredImageModel(storedModel, available);
+        });
+      } catch {
+        if (!cancelled) {
+          setImageModels(["gpt-image-2"]);
+        }
+      }
+    };
+
+    void loadImageModels();
     return () => {
       cancelled = true;
     };
@@ -573,12 +641,11 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       return;
     }
 
-    if (imageSize) {
-      window.localStorage.setItem(IMAGE_SIZE_STORAGE_KEY, imageSize);
-      return;
-    }
-    window.localStorage.removeItem(IMAGE_SIZE_STORAGE_KEY);
-  }, [imageSize]);
+    window.localStorage.setItem(IMAGE_RATIO_STORAGE_KEY, imageRatio);
+    window.localStorage.setItem(IMAGE_TIER_STORAGE_KEY, imageTier);
+    window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, imageQuality);
+    window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, imageModel);
+  }, [imageRatio, imageTier, imageQuality, imageModel]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && parsedCount > 0) {
@@ -852,7 +919,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setSelectedConversationId(conversationId);
     setImagePrompt(turn.prompt);
     setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
-    setImageSize(turn.size);
+    setImageRatio(turn.ratio);
+    setImageTier(turn.tier);
+    const parsedSize = parseImageSize(turn.size);
+    setImageWidth(parsedSize.width);
+    setImageHeight(parsedSize.height);
+    setImageQuality(turn.quality);
+    setImageModel(turn.model);
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
       turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
@@ -963,8 +1036,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           pendingImages.map((image) => {
             const taskId = image.taskId || image.id;
             return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size);
+              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
+              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
           }),
         );
         await applyTasks(submitted);
@@ -992,8 +1065,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             const resubmitted = await Promise.all(
               missingImages.map((image) =>
                 activeTurn.mode === "edit"
-                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size),
+                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
+                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality),
               ),
             );
             if (resubmitted.length > 0) {
@@ -1064,6 +1137,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         referenceImages: sourceTurn.referenceImages,
         count,
         size: sourceTurn.size,
+        ratio: sourceTurn.ratio,
+        tier: sourceTurn.tier,
+        quality: sourceTurn.quality,
         images: createLoadingImages(nextTurnId, count),
         createdAt: now,
         status: "queued",
@@ -1158,14 +1234,18 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const now = new Date().toISOString();
     const conversationId = targetConversation?.id ?? createId();
     const turnId = createId();
+    const imageSize = `${imageWidth || 1024}x${imageHeight || 1024}`;
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,
-      model: "gpt-image-2",
+      model: imageModel,
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
       count: parsedCount,
       size: imageSize,
+      ratio: imageRatio,
+      tier: imageTier,
+      quality: imageQuality,
       images: createLoadingImages(turnId, parsedCount),
       createdAt: now,
       status: "queued",
@@ -1313,7 +1393,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           <ImageComposer
             prompt={imagePrompt}
             imageCount={imageCount}
-            imageSize={imageSize}
+            imageRatio={imageRatio}
+            imageTier={imageTier}
+            imageWidth={imageWidth}
+            imageHeight={imageHeight}
+            imageQuality={imageQuality}
+            imageModel={imageModel}
+            imageModels={imageModels}
             availableQuota={availableQuota}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
@@ -1321,7 +1407,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             fileInputRef={fileInputRef}
             onPromptChange={setImagePrompt}
             onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
-            onImageSizeChange={setImageSize}
+            onImageRatioChange={setImageRatio}
+            onImageTierChange={setImageTier}
+            onImageWidthChange={setImageWidth}
+            onImageHeightChange={setImageHeight}
+            onImageQualityChange={setImageQuality}
+            onImageModelChange={setImageModel}
             onSubmit={handleSubmit}
             onPickReferenceImage={() => fileInputRef.current?.click()}
             onReferenceImageChange={handleReferenceImageChange}

@@ -10,7 +10,7 @@ os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
-from utils.helper import anonymize_token
+from utils.helper import anonymize_token, split_image_model
 
 
 class AccountCapabilityTests(unittest.TestCase):
@@ -65,6 +65,34 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["quota"], 0)
             self.assertEqual(updated["status"], "正常")
             self.assertTrue(updated["image_quota_unknown"])
+
+    def test_split_image_model_supports_plan_type_prefix(self) -> None:
+        self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
+        self.assertEqual(split_image_model("plus-codex-gpt-image-2"), ("plus", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("team-codex-gpt-image-2"), ("team", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("pro-codex-gpt-image-2"), ("pro", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("plus-gpt-image-2"), (None, None))
+        self.assertEqual(split_image_model("unknown-image-model"), (None, None))
+
+    def test_get_available_access_token_filters_by_plan_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items(
+                [
+                    {"access_token": "token-plus", "type": "Plus", "status": "正常", "quota": 3},
+                    {"access_token": "token-pro", "type": "Pro", "status": "正常", "quota": 3},
+                ]
+            )
+
+            service.fetch_remote_info = lambda access_token, event="fetch_remote_info": service.get_account(access_token)
+
+            plus_token = service.get_available_access_token(plan_type="plus")
+            pro_token = service.get_available_access_token(plan_type="pro")
+            service.release_image_slot(plus_token)
+            service.release_image_slot(pro_token)
+
+            self.assertEqual(plus_token, "token-plus")
+            self.assertEqual(pro_token, "token-pro")
 
 
 class TokenLogTests(unittest.TestCase):
