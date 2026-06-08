@@ -77,9 +77,11 @@ class RegisterService:
             return json.loads(json.dumps({**self._config, "logs": self._logs[-300:]}, ensure_ascii=False))
 
     def _inject_proxy_to_mail(self) -> None:
-        proxy = str(self._config.get("proxy") or "").strip()
-        if proxy and isinstance(self._config.get("mail"), dict):
-            self._config["mail"]["proxy"] = proxy
+        """注册代理不再自动注入邮箱配置。
+        邮箱 provider（如自建 Inbucket）通常不需要走注册代理，
+        强制注入会导致邮箱服务被代理 IP 拦截。
+        如需邮箱走代理，请在 Web 面板邮箱配置中单独设置 proxy 字段。"""
+        pass
 
     def update(self, updates: dict) -> dict:
         with self._lock:
