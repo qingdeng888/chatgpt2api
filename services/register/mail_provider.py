@@ -144,8 +144,20 @@ def _normalize_string_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
-def _create_session(conf: dict):
-    proxy = str(conf.get("proxy") or "").strip()
+def _create_session(conf: dict, provider_proxy: str | None = None):
+    """Create a curl_cffi session.
+
+    Args:
+        conf: Global mail config dict (may contain a "proxy" key).
+        provider_proxy: Per-provider proxy override.
+            - None: use global conf["proxy"] (default, backward compatible)
+            - "": explicitly no proxy (skip global)
+            - "http://...": use this specific proxy
+    """
+    if provider_proxy is not None:
+        proxy = provider_proxy.strip()
+    else:
+        proxy = str(conf.get("proxy") or "").strip()
     kwargs = {"impersonate": "chrome", "verify": False}
     if proxy:
         kwargs["proxy"] = proxy
@@ -795,7 +807,9 @@ class InbucketMailProvider(BaseMailProvider):
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
         self.random_subdomain = bool(entry.get("random_subdomain", True))
-        self.session = _create_session(conf)
+        # Inbucket is typically self-hosted; use per-provider proxy if set, otherwise NO proxy
+        provider_proxy = str(entry.get("proxy") or "").strip()
+        self.session = _create_session(conf, provider_proxy=provider_proxy if provider_proxy else "")
         self.session.headers.update({
             "User-Agent": conf["user_agent"],
             "Accept": "application/json",

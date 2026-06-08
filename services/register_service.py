@@ -45,6 +45,9 @@ def _normalize(raw: dict) -> dict:
         raw_proxy_list = []
     cfg["proxy_list"] = raw_proxy_list
     cfg["enabled"] = bool(cfg.get("enabled"))
+    # 清除 mail 配置中残留的 proxy 字段，避免邮箱请求误走注册代理
+    if isinstance(cfg.get("mail"), dict):
+        cfg["mail"].pop("proxy", None)
     stats = {**_default_config()["stats"], **(raw.get("stats") if isinstance(raw.get("stats"), dict) else {}),
              "threads": cfg["threads"]}
     cfg["stats"] = stats
