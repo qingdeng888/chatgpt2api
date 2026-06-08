@@ -61,6 +61,46 @@ docker-compose up -d
 
 ```
 
+### FlareSolverr 过 Cloudflare 盾（可选）
+
+如果你的 IP 质量较差，注册时被 Cloudflare 拦截（出现 "Just a moment..." 页面），可以启用 FlareSolverr 服务来自动过盾。
+
+**启动 FlareSolverr：**
+
+```bash
+# 方式一：使用 docker compose profiles 启动（推荐）
+docker compose --profile flaresolverr up -d
+
+# 方式二：单独启动 FlareSolverr 容器
+docker run -d \
+  --name flaresolverr \
+  -p 8191:8191 \
+  -e LOG_LEVEL=info \
+  -e TZ=Asia/Shanghai \
+  --restart unless-stopped \
+  ghcr.io/flaresolverr/flaresolverr:latest
+```
+
+**配置注册机：**
+
+在 Web 面板的注册机配置页面，填写 **FlareSolverr URL**：
+
+- Docker 内部网络：`http://flaresolverr:8191`
+- 外部访问：`http://127.0.0.1:8191`
+
+留空则不启用 FlareSolverr，行为与之前一致。
+
+**工作原理：**
+
+1. 注册任务创建会话时，若配置了 FlareSolverr URL，会先调用 FlareSolverr 获取 `cf_clearance` cookie
+2. 将获取到的 cookies 注入请求会话，后续请求携带这些 cookies 通过 CF 验证
+3. 若请求仍被 CF 拦截（如 cookie 过期），会自动重新调用 FlareSolverr 过盾后重试
+4. Cookies 有 120 秒缓存，多线程共享，避免频繁调用 FlareSolverr
+
+> **注意：** FlareSolverr 不能保证 100% 过盾成功，取决于 Cloudflare 的防护等级。若持续失败，建议同时配合更换代理 IP。
+
+---
+
 ### 存储后端配置
 
 支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
