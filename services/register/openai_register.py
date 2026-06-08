@@ -932,6 +932,18 @@ def worker(index: int) -> dict:
 
     registrar = PlatformRegistrar(proxy)
     try:
+        # Check FlareSolverr connectivity if configured
+        flaresolverr_url = str(config.get("flaresolverr_url") or "").strip()
+        if flaresolverr_url:
+            ok, msg = flaresolverr.check_health(flaresolverr_url)
+            if not ok:
+                step(index, f"FlareSolverr 连接检查失败，停止注册: {msg}", "red")
+                with stats_lock:
+                    stats["done"] += 1
+                    stats["fail"] += 1
+                return {"ok": False, "index": index, "error": msg}
+            step(index, f"FlareSolverr 连接正常: {flaresolverr_url}", "green")
+
         step(index, "任务启动")
         result = registrar.register(index)
         cost = time.time() - start

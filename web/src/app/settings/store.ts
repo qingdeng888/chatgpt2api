@@ -743,6 +743,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await updateRegisterConfig({
         mail: registerConfig.mail,
         proxy: registerConfig.proxy.trim(),
+        proxy_list: registerConfig.proxy_list || [],
+        flaresolverr_url: (registerConfig.flaresolverr_url || "").trim(),
         total: Math.max(1, Number(registerConfig.total) || 1),
         threads: Math.max(1, Number(registerConfig.threads) || 1),
         mode: registerConfig.mode,
@@ -768,6 +770,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         await updateRegisterConfig({
           mail: registerConfig.mail,
           proxy: registerConfig.proxy.trim(),
+          proxy_list: registerConfig.proxy_list || [],
+          flaresolverr_url: (registerConfig.flaresolverr_url || "").trim(),
           total: Math.max(1, Number(registerConfig.total) || 1),
           threads: Math.max(1, Number(registerConfig.threads) || 1),
           mode: registerConfig.mode,

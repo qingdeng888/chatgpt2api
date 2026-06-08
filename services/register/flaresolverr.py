@@ -174,3 +174,38 @@ def invalidate_cache() -> None:
     with _lock:
         _cached_solution = None
         _cached_at = 0.0
+
+
+
+def check_health(flaresolverr_url: str, timeout: int = 10) -> tuple[bool, str]:
+    """Check if FlareSolverr service is reachable and responding.
+
+    Returns (ok, message) tuple.
+    """
+    if not flaresolverr_url:
+        return False, "FlareSolverr URL 未配置"
+
+    try:
+        resp = cffi_requests.get(
+            f"{flaresolverr_url.rstrip('/')}/health",
+            timeout=timeout,
+            verify=False,
+        )
+        if resp.status_code == 200:
+            return True, "FlareSolverr 服务正常"
+    except Exception:
+        pass
+
+    # Some FlareSolverr versions don't have /health, try /v1 with a simple test
+    try:
+        resp = cffi_requests.post(
+            f"{flaresolverr_url.rstrip('/')}/v1",
+            json={"cmd": "sessions.list"},
+            timeout=timeout,
+            verify=False,
+        )
+        if resp.status_code == 200:
+            return True, "FlareSolverr 服务正常"
+        return False, f"FlareSolverr 返回异常状态码: {resp.status_code}"
+    except Exception as e:
+        return False, f"FlareSolverr 连接失败: {e}"
