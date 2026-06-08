@@ -18,6 +18,7 @@ from curl_cffi import requests
 
 from services.account_service import account_service
 from services.register import mail_provider
+from services.register import flaresolverr
 
 base_dir = Path(__file__).resolve().parent
 config = {
@@ -30,11 +31,12 @@ config = {
     "proxy": "",
     "total": 10,
     "threads": 3,
+    "flaresolverr_url": "",
 }
 register_config_file = base_dir.parents[1] / "data" / "register.json"
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
-    config.update({key: saved_config[key] for key in ("mail", "proxy", "total", "threads") if key in saved_config})
+    config.update({key: saved_config[key] for key in ("mail", "proxy", "total", "threads", "flaresolverr_url") if key in saved_config})
 except Exception:
     pass
 
@@ -303,6 +305,18 @@ def build_sentinel_token(session: requests.Session, device_id: str, flow: str) -
 
 
 def create_session(proxy: str = "") -> Any:
+    flaresolverr_url = str(config.get("flaresolverr_url") or "").strip()
+    if flaresolverr_url:
+        session, solution = flaresolverr.create_session_with_clearance(
+            flaresolverr_url=flaresolverr_url,
+            proxy=proxy,
+            target_url=f"{auth_base}/authorize",
+        )
+        if solution:
+            log("FlareSolverr: 已预加载 CF clearance cookies", "green")
+        else:
+            log("FlareSolverr: 未能获取 clearance，将使用普通会话", "yellow")
+        return session
     kwargs = {"impersonate": "chrome", "verify": False}
     if proxy:
         kwargs["proxy"] = proxy
@@ -523,12 +537,34 @@ class PlatformRegistrar:
             "code_challenge_method": "S256",
             "auth0Client": platform_auth0_client,
         }
-        resp, error = request_with_local_retry(self.session, "get", f"{auth_base}/api/accounts/authorize?{urlencode(params)}", headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
+        authorize_url = f"{auth_base}/api/accounts/authorize?{urlencode(params)}"
+        resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
+
+        # If CF challenge detected, try FlareSolverr to get clearance then retry
+        if (resp is None or resp.status_code != 200) and _is_cloudflare_challenge(resp):
+            flaresolverr_url = str(config.get("flaresolverr_url") or "").strip()
+            if flaresolverr_url:
+                step(index, "检测到 Cloudflare 拦截，正在通过 FlareSolverr 过盾...", "yellow")
+                flaresolverr.invalidate_cache()
+                solution = flaresolverr.get_cf_clearance(
+                    flaresolverr_url=flaresolverr_url,
+                    target_url=authorize_url,
+                    proxy=config["proxy"],
+                    force_refresh=True,
+                )
+                if solution and solution.get("status") == "ok":
+                    flaresolverr.apply_cookies_to_session(self.session, solution, domain=".openai.com")
+                    step(index, "FlareSolverr 过盾成功，重试 authorize 请求", "green")
+                    resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
+                else:
+                    err_msg = solution.get("status", "unknown") if solution else "no response"
+                    step(index, f"FlareSolverr 过盾失败: {err_msg}", "red")
+
         if resp is None or resp.status_code != 200:
             err = _response_json(resp).get("error", {}) if resp is not None else {}
             detail = f": {err.get('code', '')} - {err.get('message', '')}".strip(" -") if err else ""
             if _is_cloudflare_challenge(resp):
-                raise RuntimeError("被 Cloudflare 拦截，请更换 IP 重试")
+                raise RuntimeError("被 Cloudflare 拦截，FlareSolverr 未能解决或未配置，请检查 flaresolverr_url 设置")
             debug = _response_debug_detail(resp)
             status = getattr(resp, "status_code", "unknown")
             raise RuntimeError(error or f"platform_authorize_http_{status}{detail}, {debug}")
@@ -627,8 +663,33 @@ class PlatformRegistrar:
             headers=_login_nav_headers(f"{platform_base}/"),
             allow_redirects=True, verify=False
         )
+        # If CF challenge detected during login, try FlareSolverr
+        if (resp is None or resp.status_code != 200) and _is_cloudflare_challenge(resp):
+            flaresolverr_url = str(config.get("flaresolverr_url") or "").strip()
+            if flaresolverr_url:
+                step(index, "登录 authorize 被 CF 拦截，通过 FlareSolverr 过盾...", "yellow")
+                flaresolverr.invalidate_cache()
+                solution = flaresolverr.get_cf_clearance(
+                    flaresolverr_url=flaresolverr_url,
+                    target_url=f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
+                    proxy=config["proxy"],
+                    force_refresh=True,
+                )
+                if solution and solution.get("status") == "ok":
+                    flaresolverr.apply_cookies_to_session(login_session, solution, domain=".openai.com")
+                    step(index, "FlareSolverr 过盾成功，重试登录 authorize", "green")
+                    resp, error = request_with_local_retry(
+                        login_session, "get",
+                        f"{auth_base}/api/accounts/authorize?{urlencode(params)}",
+                        headers=_login_nav_headers(f"{platform_base}/"),
+                        allow_redirects=True, verify=False
+                    )
+                else:
+                    step(index, "FlareSolverr 过盾失败", "red")
         if resp is None:
             raise RuntimeError(error or "platform_login_authorize_failed")
+        if _is_cloudflare_challenge(resp):
+            raise RuntimeError("登录被 Cloudflare 拦截，FlareSolverr 未能解决或未配置")
         step(index, "登录 authorize 完成")
 
         # 提交邮箱（原样，不带 state）

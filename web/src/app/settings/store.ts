@@ -221,6 +221,7 @@ type SettingsStore = {
   loadRegister: (silent?: boolean) => Promise<void>;
   setRegisterConfig: (config: RegisterConfig) => void;
   setRegisterProxy: (value: string) => void;
+  setRegisterFlaresolverrUrl: (value: string) => void;
   setRegisterTotal: (value: string) => void;
   setRegisterThreads: (value: string) => void;
   setRegisterMode: (value: "total" | "quota" | "available") => void;
@@ -653,6 +654,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setRegisterProxy: (value) => {
     set((state) => state.registerConfig ? { registerConfig: { ...state.registerConfig, proxy: value } } : {});
+  },
+
+  setRegisterFlaresolverrUrl: (value) => {
+    set((state) => state.registerConfig ? { registerConfig: { ...state.registerConfig, flaresolverr_url: value } } : {});
   },
 
   setRegisterTotal: (value) => {

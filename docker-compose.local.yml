@@ -32,3 +32,19 @@ services:
 
     # 基础 URL (可选)
     #   CHATGPT2API_BASE_URL: https://your-domain.com
+
+  # FlareSolverr - Cloudflare 过盾服务（可选）
+  # 启用后在注册机配置中填写 flaresolverr_url: http://flaresolverr:8191
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+    environment:
+      LOG_LEVEL: info
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: none
+      TZ: Asia/Shanghai
+    profiles:
+      - flaresolverr

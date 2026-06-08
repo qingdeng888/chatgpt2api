@@ -39,3 +39,19 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # FlareSolverr - Cloudflare 过盾服务（可选）
+  # 启用后在注册机配置中填写 flaresolverr_url: http://flaresolverr:8191
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "${FLARESOLVERR_PORT:-8191}:8191"
+    environment:
+      - LOG_LEVEL=${FLARESOLVERR_LOG_LEVEL:-info}
+      - LOG_HTML=${FLARESOLVERR_LOG_HTML:-false}
+      - CAPTCHA_SOLVER=${FLARESOLVERR_CAPTCHA_SOLVER:-none}
+      - TZ=Asia/Shanghai
+    profiles:
+      - flaresolverr

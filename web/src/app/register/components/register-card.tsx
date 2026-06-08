@@ -16,6 +16,7 @@ export function RegisterCard() {
   const isLoading = useSettingsStore((state) => state.isLoadingRegister);
   const isSaving = useSettingsStore((state) => state.isSavingRegister);
   const setProxy = useSettingsStore((state) => state.setRegisterProxy);
+  const setFlaresolverrUrl = useSettingsStore((state) => state.setRegisterFlaresolverrUrl);
   const setTotal = useSettingsStore((state) => state.setRegisterTotal);
   const setThreads = useSettingsStore((state) => state.setRegisterThreads);
   const setMode = useSettingsStore((state) => state.setRegisterMode);
@@ -102,6 +103,11 @@ export function RegisterCard() {
             <div className="space-y-2">
               <label className="text-sm text-stone-700">注册代理</label>
               <Input value={config.proxy} onChange={(event) => setProxy(event.target.value)} placeholder="http://127.0.0.1:7890" className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-stone-700">FlareSolverr URL</label>
+              <Input value={config.flaresolverr_url || ""} onChange={(event) => setFlaresolverrUrl(event.target.value)} placeholder="http://127.0.0.1:8191" className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
+              <p className="text-xs text-stone-400">CF过盾服务地址，留空则不启用</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm text-stone-700">目标剩余额度</label>
