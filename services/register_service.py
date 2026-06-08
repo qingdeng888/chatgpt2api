@@ -21,7 +21,7 @@ def _now() -> str:
 
 
 def _default_config() -> dict:
-    return {**openai_register.config, "mode": "total", "target_quota": 100, "target_available": 10, "check_interval": 5, "enabled": False, "flaresolverr_url": "", "stats": {"success": 0, "fail": 0, "done": 0, "running": 0, "threads": openai_register.config["threads"], "elapsed_seconds": 0, "avg_seconds": 0, "success_rate": 0, "current_quota": 0, "current_available": 0}}
+    return {**openai_register.config, "mode": "total", "target_quota": 100, "target_available": 10, "check_interval": 5, "enabled": False, "flaresolverr_url": "", "proxy_list": [], "stats": {"success": 0, "fail": 0, "done": 0, "running": 0, "threads": openai_register.config["threads"], "elapsed_seconds": 0, "avg_seconds": 0, "success_rate": 0, "current_quota": 0, "current_available": 0}}
 
 
 def _normalize(raw: dict) -> dict:
@@ -35,6 +35,15 @@ def _normalize(raw: dict) -> dict:
     cfg["check_interval"] = max(1, int(cfg.get("check_interval") or 5))
     cfg["proxy"] = str(cfg.get("proxy") or "").strip()
     cfg["flaresolverr_url"] = str(cfg.get("flaresolverr_url") or "").strip()
+    # Normalize proxy_list: accept list or newline-separated string
+    raw_proxy_list = cfg.get("proxy_list") or []
+    if isinstance(raw_proxy_list, str):
+        raw_proxy_list = [line.strip() for line in raw_proxy_list.splitlines() if line.strip()]
+    elif isinstance(raw_proxy_list, list):
+        raw_proxy_list = [str(item).strip() for item in raw_proxy_list if str(item).strip()]
+    else:
+        raw_proxy_list = []
+    cfg["proxy_list"] = raw_proxy_list
     cfg["enabled"] = bool(cfg.get("enabled"))
     stats = {**_default_config()["stats"], **(raw.get("stats") if isinstance(raw.get("stats"), dict) else {}),
              "threads": cfg["threads"]}
@@ -76,7 +85,7 @@ class RegisterService:
         with self._lock:
             self._config = _normalize({**self._config, **updates})
             self._inject_proxy_to_mail()
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads", "flaresolverr_url") if k in self._config})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url") if k in self._config})
             self._save()
             return self.get()
 
@@ -91,7 +100,7 @@ class RegisterService:
             self._logs = []
             metrics = self._pool_metrics()
             self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "started_at": _now(), "updated_at": _now()}
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads", "flaresolverr_url") if k in self._config})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url") if k in self._config})
             with openai_register.stats_lock:
                 openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": time.time()})
             self._save()

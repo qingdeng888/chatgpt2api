@@ -29,6 +29,7 @@ config = {
         "providers": [],
     },
     "proxy": "",
+    "proxy_list": [],
     "total": 10,
     "threads": 3,
     "flaresolverr_url": "",
@@ -36,9 +37,93 @@ config = {
 register_config_file = base_dir.parents[1] / "data" / "register.json"
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
-    config.update({key: saved_config[key] for key in ("mail", "proxy", "total", "threads", "flaresolverr_url") if key in saved_config})
+    config.update({key: saved_config[key] for key in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url") if key in saved_config})
 except Exception:
     pass
+
+# ─── Proxy pool rotation ─────────────────────────────────────────────────────
+_proxy_pool_lock = threading.Lock()
+_proxy_pool_index = 0
+
+
+def _parse_proxy_list() -> list[str]:
+    """Parse proxy_list from config, supporting both list and newline-separated string."""
+    raw = config.get("proxy_list") or []
+    if isinstance(raw, str):
+        raw = [line.strip() for line in raw.splitlines() if line.strip()]
+    elif isinstance(raw, list):
+        raw = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        raw = []
+    # Also include the legacy single proxy field if proxy_list is empty
+    if not raw:
+        single = str(config.get("proxy") or "").strip()
+        if single:
+            raw = [single]
+    return raw
+
+
+def _pick_proxy() -> str:
+    """Round-robin pick a proxy from the proxy list."""
+    global _proxy_pool_index
+    proxies = _parse_proxy_list()
+    if not proxies:
+        return ""
+    with _proxy_pool_lock:
+        proxy = proxies[_proxy_pool_index % len(proxies)]
+        _proxy_pool_index = (_proxy_pool_index + 1) % len(proxies)
+    return proxy
+
+
+def _detect_real_ip(proxy: str = "", timeout: int = 10) -> str:
+    """Detect the real outbound IP address via a public API.
+
+    Tries multiple IP detection services for reliability.
+    Returns IP string or raises RuntimeError if detection fails.
+    """
+    ip_services = [
+        "https://api.ipify.org?format=json",
+        "https://httpbin.org/ip",
+        "https://ipinfo.io/json",
+    ]
+    kwargs: dict[str, Any] = {"impersonate": "chrome", "verify": False, "timeout": timeout}
+    if proxy:
+        kwargs["proxy"] = proxy
+
+    last_error = ""
+    for url in ip_services:
+        try:
+            resp = requests.get(url, **kwargs)
+            if resp.status_code == 200:
+                data = resp.json() if "json" in str(resp.headers.get("content-type", "")) else {}
+                ip = str(data.get("ip") or data.get("origin") or "").strip()
+                if not ip:
+                    # Try plain text response
+                    ip = resp.text.strip()
+                if ip:
+                    return ip
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    raise RuntimeError(f"代理不可用或无法获取出口IP: {last_error}")
+
+
+def _validate_proxy_and_get_ip(proxy: str, index: int) -> str:
+    """Validate proxy is working and return the real IP. Raises on failure."""
+    if not proxy:
+        # No proxy configured, get direct IP
+        try:
+            ip = _detect_real_ip("")
+            return ip
+        except Exception:
+            return "direct(unknown)"
+
+    try:
+        ip = _detect_real_ip(proxy)
+        return ip
+    except Exception as e:
+        raise RuntimeError(f"代理验证失败 [{proxy}]: {e}")
 
 auth_base = "https://auth.openai.com"
 platform_base = "https://platform.openai.com"
@@ -830,7 +915,22 @@ class PlatformRegistrar:
 
 def worker(index: int) -> dict:
     start = time.time()
-    registrar = PlatformRegistrar(config["proxy"])
+    # Pick a proxy from the pool (round-robin)
+    proxy = _pick_proxy()
+    proxy_display = proxy if proxy else "(直连)"
+
+    # Validate proxy and detect real IP before starting registration
+    try:
+        real_ip = _validate_proxy_and_get_ip(proxy, index)
+        step(index, f"代理: {proxy_display} | 出口IP: {real_ip}", "green")
+    except Exception as e:
+        step(index, f"代理验证失败，停止注册: {e}", "red")
+        with stats_lock:
+            stats["done"] += 1
+            stats["fail"] += 1
+        return {"ok": False, "index": index, "error": str(e)}
+
+    registrar = PlatformRegistrar(proxy)
     try:
         step(index, "任务启动")
         result = registrar.register(index)
@@ -844,14 +944,14 @@ def worker(index: int) -> dict:
             stats["done"] += 1
             stats["success"] += 1
             avg = (time.time() - stats["start_time"]) / stats["success"]
-        log(f'{result["email"]} 注册成功，本次耗时{cost:.1f}s，全局平均每个号注册耗时{avg:.1f}s', "green")
+        log(f'{result["email"]} 注册成功 [IP:{real_ip}]，本次耗时{cost:.1f}s，全局平均每个号注册耗时{avg:.1f}s', "green")
         return {"ok": True, "index": index, "result": result}
     except Exception as e:
         cost = time.time() - start
         with stats_lock:
             stats["done"] += 1
             stats["fail"] += 1
-        log(f"任务{index} 注册失败，本次耗时{cost:.1f}s，原因: {e}", "red")
+        log(f"任务{index} 注册失败 [IP:{real_ip}]，本次耗时{cost:.1f}s，原因: {e}", "red")
         return {"ok": False, "index": index, "error": str(e)}
     finally:
         registrar.close()

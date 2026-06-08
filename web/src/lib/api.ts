@@ -285,6 +285,7 @@ export type RegisterConfig = {
     providers: Array<Record<string, unknown>>;
   };
   proxy: string;
+  proxy_list: string[];
   flaresolverr_url: string;
   total: number;
   threads: number;

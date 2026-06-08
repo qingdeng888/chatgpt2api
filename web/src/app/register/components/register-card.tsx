@@ -16,6 +16,7 @@ export function RegisterCard() {
   const isLoading = useSettingsStore((state) => state.isLoadingRegister);
   const isSaving = useSettingsStore((state) => state.isSavingRegister);
   const setProxy = useSettingsStore((state) => state.setRegisterProxy);
+  const setProxyList = useSettingsStore((state) => state.setRegisterProxyList);
   const setFlaresolverrUrl = useSettingsStore((state) => state.setRegisterFlaresolverrUrl);
   const setTotal = useSettingsStore((state) => state.setRegisterTotal);
   const setThreads = useSettingsStore((state) => state.setRegisterThreads);
@@ -101,8 +102,15 @@ export function RegisterCard() {
               <Input value={String(config.threads)} onChange={(event) => setThreads(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-stone-700">注册代理</label>
-              <Input value={config.proxy} onChange={(event) => setProxy(event.target.value)} placeholder="http://127.0.0.1:7890" className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
+              <label className="text-sm text-stone-700">注册代理（支持多个，每行一个）</label>
+              <Textarea
+                value={(config.proxy_list || []).join("\n") || config.proxy || ""}
+                onChange={(event) => setProxyList(event.target.value)}
+                placeholder={"http://127.0.0.1:7890\nhttp://user:pass@1.2.3.4:8080\nsocks5://user:pass@5.6.7.8:1080\nsocks5://9.10.11.12:1080"}
+                className="min-h-[100px] rounded-xl border-stone-200 bg-white font-mono text-xs"
+                disabled={config.enabled}
+              />
+              <p className="text-xs text-stone-400">支持 http/https/socks5 代理，格式: 协议://[用户名:密码@]IP:端口，多个代理轮换使用</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm text-stone-700">FlareSolverr URL</label>
