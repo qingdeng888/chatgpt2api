@@ -14,12 +14,16 @@ from services.register_service import register_service
 class RegisterConfigRequest(BaseModel):
     mail: dict | None = None
     proxy: str | None = None
+    proxy_list: list[str] | None = None
+    flaresolverr_url: str | None = None
     total: int | None = None
     threads: int | None = None
     mode: str | None = None
     target_quota: int | None = None
     target_available: int | None = None
     check_interval: int | None = None
+    interval_min: int | None = None
+    interval_max: int | None = None
 
 
 def create_router() -> APIRouter:

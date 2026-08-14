@@ -6,7 +6,7 @@ import random
 import re
 import string
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import message_from_string, policy
 from email.utils import parsedate_to_datetime
 from threading import Lock
@@ -135,6 +135,18 @@ def _next_domain(domains: list[str]) -> str:
         value = domains[domain_index % len(domains)]
         domain_index = (domain_index + 1) % len(domains)
         return value
+
+
+def _expand_wildcard_domain(domain: str) -> str:
+    """把域名里的 ``*`` 替换成随机子域标签，实现泛域名。
+
+    例如 ``*.qingai.cfd`` -> ``a1b2c3d4.qingai.cfd``；每个 ``*`` 独立展开，
+    嵌套子域也能用（``*.*.example.com`` -> 两级随机子域）。不含 ``*`` 时原样返回。
+    """
+    text = str(domain or "").strip().lstrip("@").strip(".")
+    if "*" not in text:
+        return text
+    return re.sub(r"\*", lambda _m: _random_subdomain_label(), text)
 
 
 def _normalize_string_list(value: Any) -> list[str]:
@@ -271,22 +283,73 @@ def _message_tracking_ref(message: dict[str, Any]) -> str:
     return f"content:{provider}:{mailbox}:{received_value}:{digest}"
 
 
+def mark_verification_code_rejected(mailbox: dict[str, Any], code: str) -> None:
+    normalized = re.sub(r"\D", "", str(code or ""))[:6]
+    if not normalized:
+        return
+    values = mailbox.setdefault("_rejected_verification_codes", [])
+    if not isinstance(values, list):
+        values = []
+        mailbox["_rejected_verification_codes"] = values
+    if normalized not in values:
+        values.append(normalized)
+
+
+def mark_verification_code_received(mailbox: dict[str, Any]) -> None:
+    """注册流程收到并消费了验证码时调用（当前为占位，预留后续邮箱池状态记录）。"""
+    pass
+
+
+def _rejected_code_set(mailbox: dict[str, Any]) -> set[str]:
+    values = mailbox.setdefault("_rejected_verification_codes", [])
+    if not isinstance(values, list):
+        values = []
+        mailbox["_rejected_verification_codes"] = values
+    return {str(value) for value in values if str(value)}
+
+
+def _verification_code_rejected(mailbox: dict[str, Any], code: str | None) -> bool:
+    return bool(code and code in _rejected_code_set(mailbox))
+
+
+def _message_before_code_boundary(mailbox: dict[str, Any], message: dict[str, Any]) -> bool:
+    boundary = mailbox.get("_code_not_before")
+    received_at = message.get("received_at")
+    if not isinstance(boundary, datetime) or not isinstance(received_at, datetime):
+        return False
+    if not received_at.tzinfo:
+        received_at = received_at.replace(tzinfo=timezone.utc)
+    return received_at < boundary
+
+
 class BaseMailProvider:
     name = "unknown"
 
     def __init__(self, conf: dict, provider_ref: str = ""):
         self.conf = conf
         self.provider_ref = provider_ref
+        self.stop_event: Any = None
+
+    def _stopped(self) -> bool:
+        return bool(self.stop_event and self.stop_event.is_set())
+
+    def _poll_wait(self) -> bool:
+        seconds = max(0.2, self.conf["wait_interval"])
+        if self.stop_event is not None:
+            return self.stop_event.wait(seconds)
+        time.sleep(seconds)
+        return False
 
     def wait_for(self, mailbox: dict[str, Any], on_message: Callable[[dict[str, Any]], ResultT | None]) -> ResultT | None:
         deadline = time.monotonic() + self.conf["wait_timeout"]
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not self._stopped():
             message = self.fetch_latest_message(mailbox)
             if message:
                 result = on_message(message)
                 if result is not None:
                     return result
-            time.sleep(max(0.2, self.conf["wait_interval"]))
+            if self._poll_wait():
+                break
         return None
 
     def wait_for_code(self, mailbox: dict[str, Any]) -> str | None:
@@ -297,16 +360,48 @@ class BaseMailProvider:
         seen_refs = {str(item) for item in seen_value}
 
         def extract_unseen_code(message: dict[str, Any]) -> str | None:
+            if _message_before_code_boundary(mailbox, message):
+                return None
             ref = _message_tracking_ref(message)
             if ref in seen_refs:
                 return None
             code = _extract_code(message)
-            if code:
+            if code and not _verification_code_rejected(mailbox, code):
                 seen_value.append(ref)
                 seen_refs.add(ref)
-            return code
+                return code
+            return None
 
         return self.wait_for(mailbox, extract_unseen_code)
+
+    def prepare_code_baseline(self, mailbox: dict[str, Any]) -> None:
+        messages: list[dict[str, Any]] = []
+        fetch_recent = getattr(self, "fetch_recent_messages", None)
+        if callable(fetch_recent):
+            recent = fetch_recent(mailbox)
+            if isinstance(recent, list):
+                messages.extend(message for message in recent if isinstance(message, dict))
+        else:
+            latest = self.fetch_latest_message(mailbox)
+            if isinstance(latest, dict):
+                messages.append(latest)
+
+        seen_value = mailbox.setdefault("_seen_code_message_refs", [])
+        if not isinstance(seen_value, list):
+            seen_value = []
+            mailbox["_seen_code_message_refs"] = seen_value
+        seen_refs = {str(value) for value in seen_value}
+        for message in messages:
+            ref = _message_tracking_ref(message)
+            if ref not in seen_refs:
+                seen_value.append(ref)
+                seen_refs.add(ref)
+            code = _extract_code(message)
+            if code:
+                mark_verification_code_rejected(mailbox, code)
+        # Provider and host clocks can differ slightly; baseline refs/codes still
+        # prevent pre-existing mail from being selected inside this skew window.
+        mailbox["_code_not_before"] = datetime.now(timezone.utc) - timedelta(minutes=2)
 
     def close(self) -> None:
         pass
@@ -835,7 +930,7 @@ class InbucketMailProvider(BaseMailProvider):
 
     def _resolve_domain(self) -> str:
         if self.domain:
-            return _next_domain(self.domain)
+            return _expand_wildcard_domain(_next_domain(self.domain))
         raise RuntimeError("Inbucket 需要至少配置一个 domain")
 
     def _mailbox_name(self, address: str) -> str:
@@ -1039,9 +1134,32 @@ def create_mailbox(mail_config: dict, username: str | None = None) -> dict:
     raise RuntimeError(last_error or "所有启用的邮箱提供商均无法创建邮箱")
 
 
-def wait_for_code(mail_config: dict, mailbox: dict) -> str | None:
+def wait_for_code(mail_config: dict, mailbox: dict, stop_event: Any = None) -> str | None:
     provider = _create_provider(mail_config, str(mailbox.get("provider") or ""), str(mailbox.get("provider_ref") or ""))
+    provider.stop_event = stop_event
     try:
         return provider.wait_for_code(mailbox)
     finally:
         provider.close()
+
+
+def prepare_code_baseline(mail_config: dict, mailbox: dict) -> None:
+    provider = _create_provider(mail_config, str(mailbox.get("provider") or ""), str(mailbox.get("provider_ref") or ""))
+    try:
+        provider.prepare_code_baseline(mailbox)
+    finally:
+        provider.close()
+
+
+def mark_mailbox_result(mailbox: dict, *, success: bool, error: Exception | str | None = None) -> None:
+    """注册流程结束后更新邮箱状态。
+
+    当前各 provider（inbucket 等）均为一次性邮箱，无固定邮箱池状态需要跟踪，
+    此函数保留为占位，供后续接入固定邮箱池（如 outlook_token）时扩展。
+    """
+    pass
+
+
+def release_mailbox(mailbox: dict) -> None:
+    """主动释放邮箱（当前为占位，供固定邮箱池扩展）。"""
+    pass

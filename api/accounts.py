@@ -253,7 +253,8 @@ def create_router() -> APIRouter:
             access_tokens = account_service.list_tokens()
         if not access_tokens:
             raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
-        return account_service.refresh_accounts(access_tokens)
+        # remove_failed=True：手动刷新失败的账号按自动刷新逻辑直接删除（受 auto_remove_invalid_accounts 配置控制）
+        return account_service.refresh_accounts(access_tokens, remove_failed=True)
 
     @router.post("/api/accounts/export")
     async def export_accounts(body: AccountExportRequest, authorization: str | None = Header(default=None)):

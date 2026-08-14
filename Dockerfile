@@ -6,8 +6,8 @@ FROM --platform=${BUILDPLATFORM} node:22-alpine AS web-build
 
 WORKDIR /app/web
 
-COPY web/package.json web/bun.lock ./
-RUN npm install
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
 
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
@@ -30,11 +30,13 @@ WORKDIR /app
 # - git: Git 存储后端需要
 # - libpq-dev: PostgreSQL 客户端库
 # - gcc: 编译 psycopg2-binary 需要
+# - nodejs: sentinel SDK 运行时 (utils/sentinel_sdk_runner.js) 需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libpq-dev \
     gcc \
     openssl \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv

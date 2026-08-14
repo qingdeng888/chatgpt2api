@@ -206,7 +206,12 @@ class AccountService:
             normalized["export_type"] = "codex"
             normalized.pop("type", None)
         normalized["type"] = normalized.get("type") or "free"
-        normalized["status"] = normalized.get("status") or "正常"
+        # "过期"状态已废弃：历史遗留标记统一归一为"异常"（异常账号走自动删除机制），
+        # 避免前端状态域（正常/限流/异常/禁用）外出现未知值
+        raw_status = str(normalized.get("status") or "").strip()
+        if raw_status == "过期":
+            raw_status = "异常"
+        normalized["status"] = raw_status or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
@@ -631,13 +636,12 @@ class AccountService:
         if not config.auto_remove_invalid_accounts:
             self.update_account(access_token, {"status": "异常", "quota": 0})
             return False
-        removed = bool(self.delete_accounts([access_token])["removed"])
-        if removed:
-            log_service.add(LOG_TYPE_ACCOUNT, "自动移除异常账号",
+        # 检测到账号异常：直接删除。异常/封禁账号已无保留价值，留着只会占号池
+        self.delete_accounts([access_token])
+        if access_token:
+            log_service.add(LOG_TYPE_ACCOUNT, "自动删除异常账号",
                             {"source": event, "token": anonymize_token(access_token)})
-        elif access_token:
-            self.update_account(access_token, {"status": "异常", "quota": 0})
-        return removed
+        return True
 
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
@@ -918,7 +922,7 @@ class AccountService:
         self._record_refresh_success(active_token)
         return self.update_account(active_token, result)
 
-    def refresh_accounts(self, access_tokens: list[str]) -> dict[str, Any]:
+    def refresh_accounts(self, access_tokens: list[str], remove_failed: bool = False) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
             return {"refreshed": 0, "errors": [], "items": self.list_accounts()}
@@ -933,10 +937,14 @@ class AccountService:
                 for token in access_tokens
             }
             for future in as_completed(futures):
+                token = futures[future]
                 try:
                     account = future.result()
                 except Exception as exc:
-                    errors.append({"token": anonymize_token(futures[future]), "error": str(exc)})
+                    errors.append({"token": anonymize_token(token), "error": str(exc)})
+                    # remove_failed=True 时（手动刷新按钮）：刷新失败的账号按自动刷新逻辑删除或标记异常
+                    if remove_failed and self.get_account(token):
+                        self.remove_invalid_token(token, "refresh_accounts")
                     continue
                 if account is not None:
                     refreshed += 1

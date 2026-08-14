@@ -789,7 +789,8 @@ function AccountsPageContent() {
                 </thead>
                 <tbody>
                   {currentRows.map((account) => {
-                    const status = statusMeta[account.status];
+                    // 历史遗留/未知状态兜底，防止 statusMeta 无此键导致页面崩溃
+                    const status = statusMeta[account.status] ?? statusMeta["异常"];
                     const StatusIcon = status.icon;
 
                     return (

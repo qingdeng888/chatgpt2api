@@ -68,7 +68,10 @@ request.interceptors.response.use(
             payload?.message ||
             error.message ||
             `请求失败 (${status || 500})`;
-        return Promise.reject(new Error(message));
+        const httpError = new Error(message) as Error & { status?: number; isNetworkError?: boolean };
+        httpError.status = status;
+        httpError.isNetworkError = !error.response;
+        return Promise.reject(httpError);
     },
 );
 

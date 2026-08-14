@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 import uuid
@@ -33,7 +34,10 @@ def _normalize(raw: dict) -> dict:
     cfg["target_quota"] = max(1, int(cfg.get("target_quota") or 1))
     cfg["target_available"] = max(1, int(cfg.get("target_available") or 1))
     cfg["check_interval"] = max(1, int(cfg.get("check_interval") or 5))
-    cfg["proxy"] = str(cfg.get("proxy") or "").strip()
+    # 每个账号注册间隔（秒）范围随机：interval_min/interval_max，min≥0，max≥min，max=0 时不启用间隔
+    cfg["interval_min"] = max(0, int(cfg.get("interval_min") or 0))
+    cfg["interval_max"] = max(cfg["interval_min"], int(cfg.get("interval_max") or 0))
+    cfg["proxy"] = openai_register._normalize_proxy_scheme(str(cfg.get("proxy") or "").strip())
     cfg["flaresolverr_url"] = str(cfg.get("flaresolverr_url") or "").strip()
     # Normalize proxy_list: accept list or newline-separated string
     raw_proxy_list = cfg.get("proxy_list") or []
@@ -43,7 +47,7 @@ def _normalize(raw: dict) -> dict:
         raw_proxy_list = [str(item).strip() for item in raw_proxy_list if str(item).strip()]
     else:
         raw_proxy_list = []
-    cfg["proxy_list"] = raw_proxy_list
+    cfg["proxy_list"] = [openai_register._normalize_proxy_scheme(item) for item in raw_proxy_list]
     cfg["enabled"] = bool(cfg.get("enabled"))
     # 清除 mail 配置中残留的 proxy 字段，避免邮箱请求误走注册代理
     if isinstance(cfg.get("mail"), dict):
@@ -90,7 +94,7 @@ class RegisterService:
         with self._lock:
             self._config = _normalize({**self._config, **updates})
             self._inject_proxy_to_mail()
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url") if k in self._config})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url", "interval_min", "interval_max") if k in self._config})
             self._save()
             return self.get()
 
@@ -105,7 +109,7 @@ class RegisterService:
             self._logs = []
             metrics = self._pool_metrics()
             self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "started_at": _now(), "updated_at": _now()}
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url") if k in self._config})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "proxy_list", "total", "threads", "flaresolverr_url", "interval_min", "interval_max") if k in self._config})
             with openai_register.stats_lock:
                 openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": time.time()})
             self._save()
@@ -185,6 +189,18 @@ class RegisterService:
             while True:
                 cfg = self.get()
                 while self.get()["enabled"] and not self._target_reached(cfg, submitted) and len(futures) < threads:
+                    if submitted > 0:
+                        # 每个账号注册间隔：范围随机，max=0 不启用
+                        interval_min = max(0, int(cfg.get("interval_min") or 0))
+                        interval_max = max(interval_min, int(cfg.get("interval_max") or 0))
+                        if interval_max > 0:
+                            delay = random.uniform(interval_min, interval_max)
+                            self._append_log(f"账号间间隔 {delay:.0f}s（{interval_min}-{interval_max}s 随机）", "yellow")
+                            end = time.time() + delay
+                            while time.time() < end and self.get()["enabled"]:
+                                time.sleep(min(1.0, end - time.time()))
+                            if not self.get()["enabled"]:
+                                break
                     submitted += 1
                     futures.add(executor.submit(openai_register.worker, submitted))
                 self._bump(running=len(futures), done=done, success=success, fail=fail)

@@ -19,8 +19,14 @@ export async function getValidatedAuthSession(): Promise<StoredAuthSession | nul
     };
     await setStoredAuthSession(nextSession);
     return nextSession;
-  } catch {
-    await clearStoredAuthSession();
-    return null;
+  } catch (error) {
+    // 仅当服务端明确返回 401（密钥已失效）时才清除会话并登出；
+    // 瞬时网络错误（keep-alive 连接复用失败/超时等）不登出，否则一次网络波动就会把用户弹回登录页。
+    const err = error as { status?: number; isNetworkError?: boolean };
+    if (err.status === 401) {
+      await clearStoredAuthSession();
+      return null;
+    }
+    return storedSession;
   }
 }

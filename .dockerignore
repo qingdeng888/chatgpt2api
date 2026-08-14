@@ -9,6 +9,20 @@ __pycache__
 
 web/.next
 web/node_modules
+web/out
+
+data
+web_dist
+test
+
+# 探针/临时测试脚本（仅本地调试用，不打入镜像）
+probe_*.py
+test_*.py
+report-*.md
+
+# 源码打包产物，不打入镜像
+grok-register-src-20260810.tar.gz
+chatgpt2api-src-*.tar.gz
 
 assets
 README.md
