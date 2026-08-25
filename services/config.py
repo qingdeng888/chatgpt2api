@@ -176,6 +176,7 @@ def _validate_image_storage_settings(settings: dict[str, object]) -> None:
 class LoadedSettings:
     auth_key: str
     refresh_account_interval_minute: int
+    full_refresh_account_interval_minute: int
 
 
 def _normalize_auth_key(value: object) -> str:
@@ -217,9 +218,15 @@ def _load_settings() -> LoadedSettings:
     except (TypeError, ValueError):
         refresh_interval = 5
 
+    try:
+        full_refresh_interval = int(raw_config.get("full_refresh_account_interval_minute", 2))
+    except (TypeError, ValueError):
+        full_refresh_interval = 2
+
     return LoadedSettings(
         auth_key=auth_key,
-        refresh_account_interval_minute=refresh_interval,
+        refresh_account_interval_minute=max(1, refresh_interval),
+        full_refresh_account_interval_minute=max(1, full_refresh_interval),
     )
 
 
@@ -259,6 +266,14 @@ class ConfigStore:
             return int(self.data.get("refresh_account_interval_minute", 5))
         except (TypeError, ValueError):
             return 5
+
+    @property
+    def full_refresh_account_interval_minute(self) -> int:
+        """全量刷新所有账号信息和额度的时间间隔（分钟），默认 2 分钟。"""
+        try:
+            return max(1, int(self.data.get("full_refresh_account_interval_minute", 2)))
+        except (TypeError, ValueError):
+            return 2
 
     @property
     def image_retention_days(self) -> int:
@@ -379,6 +394,7 @@ class ConfigStore:
     def get(self) -> dict[str, object]:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
+        data["full_refresh_account_interval_minute"] = self.full_refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_poll_interval_secs"] = self.image_poll_interval_secs

@@ -113,8 +113,8 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
 
 
 def start_full_account_refresh_watcher(stop_event: Event) -> Thread:
-    """每隔 10 分钟刷新所有账号信息和额度，自动发现并清理封禁账号。"""
-    interval_seconds = 10 * 60
+    """周期性刷新所有账号信息和额度，自动发现并清理封禁账号。"""
+    interval_seconds = config.full_refresh_account_interval_minute * 60
 
     def worker() -> None:
         # 启动后等待一个周期再开始首次刷新，避免启动时与其他初始化冲突

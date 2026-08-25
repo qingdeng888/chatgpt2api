@@ -23,6 +23,7 @@ export function ConfigCard() {
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
+  const setFullRefreshAccountIntervalMinute = useSettingsStore((state) => state.setFullRefreshAccountIntervalMinute);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
@@ -89,7 +90,17 @@ export function ConfigCard() {
               placeholder="分钟"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">单位分钟，控制账号自动刷新频率。</p>
+            <p className="text-xs text-stone-500">单位分钟，控制限流/临期账号的自动刷新频率。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">全量账号刷新间隔</label>
+            <Input
+              value={String(config?.full_refresh_account_interval_minute || "")}
+              onChange={(event) => setFullRefreshAccountIntervalMinute(event.target.value)}
+              placeholder="分钟"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">单位分钟，控制所有账号信息和额度的自动刷新频率。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>

@@ -84,6 +84,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
   return {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
+    full_refresh_account_interval_minute: Number(config.full_refresh_account_interval_minute || 2),
     image_retention_days: Number(config.image_retention_days || 30),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
     image_account_concurrency: Number(config.image_account_concurrency || 3),
@@ -341,6 +342,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await updateSettingsConfig({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
+        full_refresh_account_interval_minute: Math.max(1, Number(config.full_refresh_account_interval_minute) || 2),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
@@ -400,6 +402,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         config: {
           ...state.config,
           refresh_account_interval_minute: value,
+        },
+      };
+    });
+  },
+
+  setFullRefreshAccountIntervalMinute: (value) => {
+    set((state) => {
+      if (!state.config) {
+        return {};
+      }
+      return {
+        config: {
+          ...state.config,
+          full_refresh_account_interval_minute: value,
         },
       };
     });
