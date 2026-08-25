@@ -942,9 +942,13 @@ class AccountService:
                     account = future.result()
                 except Exception as exc:
                     errors.append({"token": anonymize_token(token), "error": str(exc)})
-                    # remove_failed=True 时（手动刷新按钮）：刷新失败的账号按自动刷新逻辑删除或标记异常
+                    # remove_failed=True 时（手动刷新/定时全量刷新）：仅当 token 确实失效（InvalidAccessTokenError）
+                    # 才删除或标记异常账号；瞬态错误（网络超时、连接重置、临时 4xx/5xx）只记录，不误删健康账号。
                     if remove_failed and self.get_account(token):
-                        self.remove_invalid_token(token, "refresh_accounts")
+                        from services.openai_backend_api import InvalidAccessTokenError
+
+                        if isinstance(exc, InvalidAccessTokenError):
+                            self.remove_invalid_token(token, "refresh_accounts")
                     continue
                 if account is not None:
                     refreshed += 1
