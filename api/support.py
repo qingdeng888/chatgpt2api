@@ -122,7 +122,9 @@ def start_full_account_refresh_watcher(stop_event: Event) -> Thread:
                 all_tokens = account_service.list_all_tokens()
                 if all_tokens:
                     print(f"[account-full-refresh] refreshing all {len(all_tokens)} accounts")
-                    result = account_service.refresh_accounts(all_tokens)
+                    # remove_failed=True：与 Web 端"一键刷新所有账号"保持一致，
+                    # 刷新失败的账号自动剔除（受 auto_remove_invalid_accounts 配置控制）
+                    result = account_service.refresh_accounts(all_tokens, remove_failed=True)
                     refreshed = result.get("refreshed", 0)
                     errors = result.get("errors", [])
                     print(f"[account-full-refresh] done: refreshed={refreshed}, errors={len(errors)}")
