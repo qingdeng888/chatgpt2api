@@ -80,8 +80,6 @@ def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
 
 
 def start_limited_account_watcher(stop_event: Event) -> Thread:
-    interval_seconds = config.refresh_account_interval_minute * 60
-
     def worker() -> None:
         while not stop_event.is_set():
             try:
@@ -105,7 +103,8 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                         print(f"[account-watcher] keepalive errors: {result['errors']}")
             except Exception as exc:
                 print(f"[account-watcher] fail {exc}")
-            stop_event.wait(interval_seconds)
+            # 每轮循环前重新读取配置，使 Web 端修改立即生效（无需重启）
+            stop_event.wait(config.refresh_account_interval_minute * 60)
 
     thread = Thread(target=worker, name="account-watcher", daemon=True)
     thread.start()
@@ -114,11 +113,10 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
 
 def start_full_account_refresh_watcher(stop_event: Event) -> Thread:
     """周期性刷新所有账号信息和额度，自动发现并清理封禁账号。"""
-    interval_seconds = config.full_refresh_account_interval_minute * 60
 
     def worker() -> None:
         # 启动后等待一个周期再开始首次刷新，避免启动时与其他初始化冲突
-        stop_event.wait(interval_seconds)
+        stop_event.wait(config.full_refresh_account_interval_minute * 60)
         while not stop_event.is_set():
             try:
                 all_tokens = account_service.list_all_tokens()
@@ -132,7 +130,8 @@ def start_full_account_refresh_watcher(stop_event: Event) -> Thread:
                     print("[account-full-refresh] no accounts to refresh")
             except Exception as exc:
                 print(f"[account-full-refresh] fail {exc}")
-            stop_event.wait(interval_seconds)
+            # 每轮循环前重新读取配置，使 Web 端修改立即生效（无需重启）
+            stop_event.wait(config.full_refresh_account_interval_minute * 60)
 
     thread = Thread(target=worker, name="full-account-refresh", daemon=True)
     thread.start()
