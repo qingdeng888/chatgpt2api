@@ -1,3 +1,5 @@
+# 本地构建用的 compose：从当前源码构建镜像（不使用 GHCR 预构建镜像）
+# 用法：docker compose -f docker-compose.local.yml up --build
 services:
   app:
     build:
