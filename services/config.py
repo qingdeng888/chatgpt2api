@@ -22,6 +22,7 @@ DEFAULT_BACKUP_INCLUDE = {
     "sub2api": True,
     "logs": True,
     "image_tasks": True,
+    "image_conversations": True,
     "accounts_snapshot": True,
     "auth_keys_snapshot": True,
     "images": False,
@@ -314,6 +315,14 @@ class ConfigStore:
             return 3
 
     @property
+    def image_conversation_max_items(self) -> int:
+        """每个登录身份保留的画图对话上限，超出后淘汰 updated_at 最旧的。"""
+        try:
+            return max(1, int(self.data.get("image_conversation_max_items", 200)))
+        except (TypeError, ValueError):
+            return 200
+
+    @property
     def auto_remove_invalid_accounts(self) -> bool:
         value = self.data.get("auto_remove_invalid_accounts", False)
         if isinstance(value, str):
@@ -400,6 +409,7 @@ class ConfigStore:
         data["image_poll_interval_secs"] = self.image_poll_interval_secs
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["image_conversation_max_items"] = self.image_conversation_max_items
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["log_levels"] = self.log_levels

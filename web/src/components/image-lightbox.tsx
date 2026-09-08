@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ImageOff, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -100,6 +100,8 @@ export function ImageLightbox({
   const rafRef = useRef<number | null>(null);
   const [transform, setTransform] = useState<ImageTransform>({ scale: 1, x: 0, y: 0 });
   const [isGesturing, setIsGesturing] = useState(false);
+  // 当前图加载失败（被图片保留期清理后 src 会 404）：显示占位而不是浏览器破图。
+  const [imageFailed, setImageFailed] = useState(false);
   const current = images[currentIndex];
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex < images.length - 1;
@@ -155,6 +157,11 @@ export function ImageLightbox({
   useEffect(() => {
     resetTransform();
   }, [current?.id, open, resetTransform]);
+
+  // 换图或重新打开时清掉失败标记，否则上一张的破图状态会带到下一张。
+  useEffect(() => {
+    setImageFailed(false);
+  }, [current?.id, current?.src, open]);
 
   useEffect(() => {
     return () => {
@@ -367,7 +374,11 @@ export function ImageLightbox({
             <button
               type="button"
               onClick={handleDownload}
-              className="inline-flex size-9 items-center justify-center rounded-full bg-black/50 text-white/90 transition hover:bg-black/70"
+              disabled={imageFailed}
+              className={cn(
+                "inline-flex size-9 items-center justify-center rounded-full bg-black/50 text-white/90 transition hover:bg-black/70",
+                imageFailed ? "cursor-not-allowed opacity-50 hover:bg-black/50" : "",
+              )}
               aria-label="下载图片"
             >
               <Download className="size-4" />
@@ -397,24 +408,37 @@ export function ImageLightbox({
             onTouchEnd={handleTouchEnd}
             onTouchCancel={handleTouchCancel}
           >
-            <img
-              src={current.src}
-              alt=""
-              className={cn(
-                "max-h-[90vh] max-w-[90vw] rounded-lg object-contain will-change-transform",
-                isGesturing ? "" : "transition-transform duration-150 ease-out",
-                transform.scale > minScale ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
-              )}
-              style={{
-                transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                toggleZoom();
-              }}
-              draggable={false}
-            />
+            {imageFailed ? (
+              <div
+                className="flex max-h-[90vh] max-w-[90vw] flex-col items-center justify-center gap-3 rounded-lg bg-white/10 px-10 py-8 text-white/80"
+                role="img"
+                aria-label="图片已过期"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ImageOff className="size-8" />
+                <span className="text-sm">图片已过期（超过保留期）</span>
+              </div>
+            ) : (
+              <img
+                src={current.src}
+                alt=""
+                className={cn(
+                  "max-h-[90vh] max-w-[90vw] rounded-lg object-contain will-change-transform",
+                  isGesturing ? "" : "transition-transform duration-150 ease-out",
+                  transform.scale > minScale ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
+                )}
+                style={{
+                  transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  toggleZoom();
+                }}
+                onError={() => setImageFailed(true)}
+                draggable={false}
+              />
+            )}
           </div>
 
           {hasNext && transform.scale <= minScale && (

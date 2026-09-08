@@ -31,9 +31,14 @@ import {
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import {
   clearImageConversations,
+  clearLegacyLocalImageConversations,
   deleteImageConversation,
   getImageConversationStats,
+  getReferenceImageSrc,
+  importLegacyImageConversations,
   listImageConversations,
+  MAX_REFERENCE_IMAGES,
+  readLegacyLocalImageConversations,
   renameImageConversation,
   saveImageConversation,
   saveImageConversations,
@@ -51,6 +56,7 @@ const IMAGE_TIER_STORAGE_KEY = "chatgpt2api:image_last_tier";
 const IMAGE_QUALITY_STORAGE_KEY = "chatgpt2api:image_last_quality";
 const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
+const LEGACY_MIGRATED_STORAGE_KEY = "chatgpt2api:image_conversations_migrated";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
 
 function clampImageCount(value: string) {
@@ -134,7 +140,11 @@ function normalizeStoredImageModel(value: string | null, availableModels: ImageM
   return availableModels[0] || "gpt-image-2";
 }
 
-function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
+/** 只有内存里还留着 b64_json（刚生成、尚未落盘）时才能直接构造，否则返回 null 让调用方走 URL 下载。 */
+function buildReferenceImageFromResult(
+  image: StoredImage,
+  fileName: string,
+): (StoredReferenceImage & { dataUrl: string }) | null {
   if (!image.b64_json) {
     return null;
   }
@@ -153,6 +163,23 @@ async function fetchImageAsFile(url: string, fileName: string) {
   }
   const blob = await response.blob();
   return new File([blob], fileName, { type: blob.type || "image/png" });
+}
+
+/**
+ * 把一张参考图还原成可提交的 File。
+ * - 内存态（刚上传、尚未保存）带 dataUrl，直接本地解码，无需请求服务器；
+ * - 持久化态（从服务器读回）只有 rel/url，按地址把原图取回来。
+ * 图被保留期清理后地址会 404，此时抛错，由调用方决定降级还是中断。
+ */
+async function referenceImageToFile(image: StoredReferenceImage, fallbackName: string): Promise<File> {
+  if (image.dataUrl) {
+    return dataUrlToFile(image.dataUrl, image.name || fallbackName, image.type);
+  }
+  const src = getReferenceImageSrc(image);
+  if (!src) {
+    throw new Error("参考图已失效，请重新上传");
+  }
+  return fetchImageAsFile(src, image.name || fallbackName);
 }
 
 async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
@@ -366,6 +393,40 @@ async function recoverConversationHistory(items: ImageConversation[]) {
   return syncConversationImageTasks(normalized);
 }
 
+/**
+ * 首次登录迁移：服务器上没有历史、但浏览器 IndexedDB 里还留着旧版本的本地记录时，
+ * 把本地历史批量上传，成功后清空本地副本，然后重新拉一次带图片地址的列表。
+ *
+ * 幂等靠两道闸门：
+ * - localStorage 标志位拦住已成功迁移的重复上传（无痕窗口没有该标志，但也没有 IndexedDB 旧数据）；
+ * - 服务器非空时直接放弃迁移，以服务器为准，不把本地旧数据倒灌回去。
+ * 失败时既不写标志位也不清本地，下次进入页面重试。
+ */
+async function migrateLegacyLocalImageConversations(serverItems: ImageConversation[]): Promise<ImageConversation[]> {
+  if (serverItems.length > 0 || window.localStorage.getItem(LEGACY_MIGRATED_STORAGE_KEY) === "1") {
+    return serverItems;
+  }
+
+  const legacyItems = await readLegacyLocalImageConversations();
+  if (legacyItems.length === 0) {
+    // 本地也没有历史：标记完成，免得之后每次挂载都白读一遍 IndexedDB。
+    window.localStorage.setItem(LEGACY_MIGRATED_STORAGE_KEY, "1");
+    return serverItems;
+  }
+
+  try {
+    const imported = await importLegacyImageConversations(legacyItems);
+    await clearLegacyLocalImageConversations();
+    window.localStorage.setItem(LEGACY_MIGRATED_STORAGE_KEY, "1");
+    toast.success(`已把 ${imported} 条本地对话记录迁移到服务器`);
+    return await listImageConversations();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "未知错误";
+    toast.error(`本地对话记录迁移失败，下次进入页面会重试：${message}`);
+    return serverItems;
+  }
+}
+
 
 function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const didLoadQuotaRef = useRef(false);
@@ -499,7 +560,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         setImageQuality(storedQuality || "auto");
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
-        const items = await listImageConversations();
+        const serverItems = await listImageConversations();
+        const items = await migrateLegacyLocalImageConversations(serverItems);
         const normalizedItems = await recoverConversationHistory(items);
         if (cancelled) {
           return;
@@ -833,30 +895,49 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     await handleDeleteConversation(target.id);
   };
 
-  const appendReferenceImages = useCallback(async (files: File[]) => {
-    if (files.length === 0) {
-      return;
-    }
-
-    try {
-      const previews = await Promise.all(
-        files.map(async (file) => ({
-          name: file.name,
-          type: file.type || "image/png",
-          dataUrl: await readFileAsDataUrl(file),
-        })),
-      );
-
-      setReferenceImageFiles((prev) => [...prev, ...files]);
-      setReferenceImages((prev) => [...prev, ...previews]);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
+  const appendReferenceImages = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) {
+        return;
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "读取参考图失败";
-      toast.error(message);
-    }
-  }, []);
+
+      // 每个对话最多 MAX_REFERENCE_IMAGES 张（与服务端上限一致）。先截断再读 base64，
+      // 免得把注定会被丢弃的图白白解码、上传一遍。
+      const available = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
+      if (available === 0) {
+        toast.error(`每个对话最多保留 ${MAX_REFERENCE_IMAGES} 张参考图`);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+        return;
+      }
+      const accepted = files.slice(0, available);
+      const dropped = files.length - accepted.length;
+
+      try {
+        const previews = await Promise.all(
+          accepted.map(async (file) => ({
+            name: file.name,
+            type: file.type || "image/png",
+            dataUrl: await readFileAsDataUrl(file),
+          })),
+        );
+
+        setReferenceImageFiles((prev) => [...prev, ...accepted]);
+        setReferenceImages((prev) => [...prev, ...previews]);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+        if (dropped > 0) {
+          toast.error(`每个对话最多保留 ${MAX_REFERENCE_IMAGES} 张参考图，已忽略多出的 ${dropped} 张`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "读取参考图失败";
+        toast.error(message);
+      }
+    },
+    [referenceImages.length],
+  );
 
   const handleReferenceImageChange = useCallback(
     async (files: File[]) => {
@@ -882,14 +963,22 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   const handleContinueEdit = useCallback(
     async (conversationId: string, image: StoredImage | StoredReferenceImage) => {
+      // 先守上限再取图：持久化的结果图要从服务器下载，超限时没必要白下一趟（还可能 404）。
+      if (referenceImages.length >= MAX_REFERENCE_IMAGES) {
+        toast.error(`每个对话最多保留 ${MAX_REFERENCE_IMAGES} 张参考图`);
+        return;
+      }
+
       try {
+        // StoredImage（生成结果图）必有 id，StoredReferenceImage（参考图）从无 ——
+        // 用 id 作判别。参考图持久化后没有 dataUrl，不能再靠 dataUrl 键区分。
         const nextReference =
-          "dataUrl" in image
-            ? {
+          "id" in image
+            ? await buildReferenceImageFromStoredImage(image, `conversation-${conversationId}-${Date.now()}.png`)
+            : {
                 referenceImage: image,
-                file: dataUrlToFile(image.dataUrl, image.name, image.type),
-              }
-            : await buildReferenceImageFromStoredImage(image, `conversation-${conversationId}-${Date.now()}.png`);
+                file: await referenceImageToFile(image, image.name),
+              };
         if (!nextReference) {
           return;
         }
@@ -906,7 +995,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         toast.error(message);
       }
     },
-    [],
+    [referenceImages.length],
   );
 
   const handleReuseTurnConfig = useCallback(async (conversationId: string, turnId: string) => {
@@ -927,9 +1016,20 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageQuality(turn.quality);
     setImageModel(turn.model);
     setReferenceImages(turn.referenceImages);
-    setReferenceImageFiles(
-      turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
-    );
+    try {
+      // 持久化的参考图只有 rel/url，需要从服务器把原图取回来才能再次提交。
+      const files = await Promise.all(
+        turn.referenceImages.map((image, index) =>
+          referenceImageToFile(image, image.name || `${turn.id}-${index + 1}.png`),
+        ),
+      );
+      setReferenceImageFiles(files);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "读取参考图失败";
+      setReferenceImageFiles([]);
+      toast.error(message);
+      return;
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -1024,9 +1124,16 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           };
         });
 
-        const referenceFiles = activeTurn.referenceImages.map((image, index) =>
-          dataUrlToFile(image.dataUrl, image.name || `${activeTurn.id}-${index + 1}.png`, image.type),
-        );
+        // 只有图生图需要把参考图还原成 File；文生图用不到，避免无谓的网络请求。
+        // 此时 activeTurn 通常已持久化（只剩 rel/url），需要从服务器把原图取回来。
+        const referenceFiles =
+          activeTurn.mode === "edit"
+            ? await Promise.all(
+                activeTurn.referenceImages.map((image, index) =>
+                  referenceImageToFile(image, image.name || `${activeTurn.id}-${index + 1}.png`),
+                ),
+              )
+            : [];
         if (activeTurn.mode === "edit" && referenceFiles.length === 0) {
           throw new Error("未找到可用于继续编辑的参考图");
         }

@@ -292,3 +292,28 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
     if not images:
         raise HTTPException(status_code=400, detail={"error": "image file or image_url is required"})
     return images
+
+
+async def parse_image_reference_sources(request: Request) -> list[ImageSource]:
+    """解析参考图来源：与 parse_image_edit_request 共用同一套字段，但不要求 prompt。
+
+    供「上传参考图换取服务器相对路径」的端点使用 —— 对话持久化只存 rel，
+    所以参考图必须先落盘再保存对话。
+    """
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/json":
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail={"error": "invalid JSON body"}) from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail={"error": "JSON body must be an object"})
+        return _json_image_sources(body)
+
+    form = await request.form()
+    sources: list[ImageSource] = []
+    for key, value in form.multi_items():
+        if key in IMAGE_REFERENCE_FIELDS:
+            sources.extend(_sources_from_value(value))
+    return sources
+

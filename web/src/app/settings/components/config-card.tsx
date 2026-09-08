@@ -25,6 +25,7 @@ export function ConfigCard() {
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
   const setFullRefreshAccountIntervalMinute = useSettingsStore((state) => state.setFullRefreshAccountIntervalMinute);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
+  const setImageConversationMaxItems = useSettingsStore((state) => state.setImageConversationMaxItems);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
@@ -159,6 +160,16 @@ export function ConfigCard() {
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
             <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">画图对话保留数量</label>
+            <Input
+              value={String(config?.image_conversation_max_items || "")}
+              onChange={(event) => setImageConversationMaxItems(event.target.value)}
+              placeholder="200"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">每个登录密钥最多保留多少条画图对话，超出后删除最久未更新的。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片轮询超时</label>

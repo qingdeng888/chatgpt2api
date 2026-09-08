@@ -5,7 +5,8 @@ import { ChevronUp, Clock3, Download, LoaderCircle, RotateCcw, Sparkles, Trash2 
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ImageConversation, ImageTurn, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
+import { getReferenceImageSrc, type ImageConversation, type ImageTurn, type ImageTurnStatus, type StoredImage, type StoredReferenceImage } from "@/store/image-conversations";
+import { ConversationImage } from "@/app/image/components/conversation-image";
 
 export type ImageLightboxItem = {
   id: string;
@@ -190,7 +191,7 @@ export function ImageResults({
         const turnIndex = visibleStartIndex + relativeIndex;
         const referenceLightboxImages = turn.referenceImages.map((image, index) => ({
           id: `${turn.id}-reference-${index}`,
-          src: image.dataUrl,
+          src: getReferenceImageSrc(image),
         }));
         const successfulTurnImages = turn.images.flatMap((image) => {
           const src = image.status === "success" ? getStoredImageSrc(image) : "";
@@ -256,8 +257,8 @@ export function ImageResults({
                               className="group relative h-24 w-24 overflow-hidden border border-stone-200/80 bg-stone-100/60 text-left transition hover:border-stone-300"
                               aria-label={`预览参考图 ${image.name || index + 1}`}
                             >
-                              <img
-                                src={image.dataUrl}
+                              <ConversationImage
+                                src={getReferenceImageSrc(image)}
                                 alt={image.name || `参考图 ${index + 1}`}
                                 className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
                               />
@@ -304,7 +305,7 @@ export function ImageResults({
                               onClick={() => onOpenLightbox(successfulTurnImages, currentIndex)}
                               className="group block aspect-square w-full cursor-zoom-in overflow-hidden rounded-xl sm:aspect-auto"
                             >
-                              <img
+                              <ConversationImage
                                 src={imageSrc}
                                 alt={`Generated result ${index + 1}`}
                                 className="block h-full w-full object-cover transition duration-200 group-hover:brightness-90 sm:h-auto sm:object-contain"

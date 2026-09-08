@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import type { ImageModel } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { getReferenceImageSrc, type StoredReferenceImage } from "@/store/image-conversations";
+import { ConversationImage } from "@/app/image/components/conversation-image";
 
 type ImageComposerProps = {
   prompt: string;
@@ -22,7 +24,7 @@ type ImageComposerProps = {
   imageModels: ImageModel[];
   availableQuota: string;
   activeTaskCount: number;
-  referenceImages: Array<{ name: string; dataUrl: string }>;
+  referenceImages: StoredReferenceImage[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPromptChange: (value: string) => void;
@@ -116,7 +118,7 @@ export function ImageComposer({
   const sizeMenuRef = useRef<HTMLDivElement>(null);
   const sizeMenuBtnRef = useRef<HTMLButtonElement>(null);
   const lightboxImages = useMemo(
-    () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
+    () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: getReferenceImageSrc(image) })),
     [referenceImages],
   );
   const modelOptions = useMemo(
@@ -232,8 +234,8 @@ export function ImageComposer({
                   className="group size-14 overflow-hidden rounded-2xl border border-stone-200 bg-stone-50 transition hover:border-stone-300 sm:size-16"
                   aria-label={`预览参考图 ${image.name || index + 1}`}
                 >
-                  <img
-                    src={image.dataUrl}
+                  <ConversationImage
+                    src={getReferenceImageSrc(image)}
                     alt={image.name || `参考图 ${index + 1}`}
                     className="h-full w-full object-cover"
                   />

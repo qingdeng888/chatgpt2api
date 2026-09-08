@@ -122,6 +122,7 @@ export type SettingsConfig = {
   refresh_account_interval_minute?: number | string;
   full_refresh_account_interval_minute?: number | string;
   image_retention_days?: number | string;
+  image_conversation_max_items?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
   auto_remove_invalid_accounts?: boolean;

@@ -86,6 +86,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
     full_refresh_account_interval_minute: Number(config.full_refresh_account_interval_minute || 2),
     image_retention_days: Number(config.image_retention_days || 30),
+    image_conversation_max_items: Number(config.image_conversation_max_items || 200),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
     image_account_concurrency: Number(config.image_account_concurrency || 3),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
@@ -203,6 +204,7 @@ type SettingsStore = {
   testBackup: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
   setImageRetentionDays: (value: string) => void;
+  setImageConversationMaxItems: (value: string) => void;
   setImagePollTimeoutSecs: (value: string) => void;
   setImageAccountConcurrency: (value: string) => void;
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
@@ -344,6 +346,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
         full_refresh_account_interval_minute: Math.max(1, Number(config.full_refresh_account_interval_minute) || 2),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
+        image_conversation_max_items: Math.max(1, Number(config.image_conversation_max_items) || 200),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
@@ -423,6 +426,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImageRetentionDays: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_retention_days: value } } : {});
+  },
+
+  setImageConversationMaxItems: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_conversation_max_items: value } } : {});
   },
 
   setImagePollTimeoutSecs: (value) => {
