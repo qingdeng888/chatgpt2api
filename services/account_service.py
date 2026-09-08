@@ -544,6 +544,10 @@ class AccountService:
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> str:
+        # 获取并发闸门的总超时预算：复用生图轮询超时阈值。
+        # 防止所有账号 in-flight 触顶时（slot 泄漏或极端过载）在下方 while 里
+        # 无预算永久空转，导致任务卡死在 running 且不会自动超时停止。
+        deadline = time.monotonic() + max(1, int(config.image_poll_timeout_secs))
         with self._image_slot_condition:
             while True:
                 if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
@@ -557,7 +561,14 @@ class AccountService:
                     self._index += 1
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
-                self._image_slot_condition.wait(timeout=1.0)
+                # 账号都存在但并发已满：等待其它任务释放 slot，受总预算约束。
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"等待可用生图账号超时（{int(config.image_poll_timeout_secs)} 秒内并发闸门一直占满），"
+                        "请稍后重试，或调大 image_account_concurrency / 扩充号池。"
+                    )
+                self._image_slot_condition.wait(timeout=min(1.0, remaining))
 
     def release_image_slot(self, access_token: str) -> None:
         if not access_token:

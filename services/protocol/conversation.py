@@ -797,6 +797,11 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 account_service.mark_image_result(token, True)
                 break
             except ImagePollTimeoutError as exc:
+                # 释放并发闸门：生图轮询超时属于上游拥堵/限流，不是账号失败，
+                # 只归还 slot（不计入 fail 统计）。否则 _image_inflight 计数泄漏，
+                # 累积触顶后 _acquire_next_candidate_token 会无超时永久阻塞，
+                # 导致后续任务全部卡死在 running 且不会自动超时。
+                account_service.release_image_slot(token)
                 if account_email and not getattr(exc, "account_email", ""):
                     exc.account_email = account_email
                 raise
