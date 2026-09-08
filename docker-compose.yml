@@ -1,9 +1,9 @@
 # 生产/部署用的 compose：直接拉取预构建镜像（由 GitHub Actions 构建并推送到 GHCR）
-# 镜像地址：ghcr.io/qingdeng888/chatgpt2api:20260825
+# 镜像地址：ghcr.io/qingdeng888/chatgpt2api:20260908
 # 本地从源码构建请改用：docker compose -f docker-compose.local.yml up --build
 services:
   app:
-    image: ghcr.io/qingdeng888/chatgpt2api:20260825
+    image: ghcr.io/qingdeng888/chatgpt2api:20260908
     container_name: chatgpt2api
     restart: unless-stopped
     pull_policy: always
